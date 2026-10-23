@@ -24,6 +24,21 @@ require ../flua.4th
 : expect-error ( lua-a lua-u -- f )
     ['] fl-compile catch if 2drop true else 2drop false then ;
 
+\ ---------- режим --stack ----------
+\ ( lua-a lua-u expected-a expected-u -- f ) точное сравнение в режиме --stack
+: transpiles-stack? ( lua-a lua-u expected-a expected-u -- f )
+    true stack-mode? !
+    2>r fl-compile emit-result false stack-mode? !
+    2r> compare 0= ;
+\ ( lua-a lua-u -- ) скомпилировать в --stack и выполнить
+: run-stack ( lua-a lua-u -- )
+    true stack-mode? ! fl-compile emit-result false stack-mode? ! evaluate ;
+\ ( lua-a lua-u -- f ) ожидаем ошибки в режиме --stack
+: expect-stack-error ( lua-a lua-u -- f )
+    true stack-mode? !
+    ['] fl-compile catch if 2drop true else 2drop false then
+    false stack-mode? ! ;
+
 \ ---------- точные сравнения ----------
 T{ s\" function add(a,b) return a+b end"
    s\" \\ ( a b -- r )
@@ -81,6 +96,39 @@ T{ greet-returns-hi? -> true }T
     s\" function cat(a) return a .. \"!\" end" run-generated
     s" a" s" cat" evaluate s" a!" compare 0= ;
 T{ cat-runs? -> true }T
+
+\ ---------- режим --stack: стековая эмиссия без { } ----------
+T{ s\" function add(a,b) return a+b end"
+   s\" \\ ( a b -- r )
+: add 
+1 roll 1 roll + 
+;
+"
+   transpiles-stack? -> true }T
+
+T{ s\" function neg(v) return -v end"
+   s\" \\ ( v -- r )
+: neg 
+negate 
+;
+"
+   transpiles-stack? -> true }T
+
+T{ s\" function noargs() return 7 end"
+   s\" \\ ( -- r )
+: noargs 
+7 
+;
+"
+   transpiles-stack? -> true }T
+
+\ выполнение стекового генерата: два roll = swap, дважды = ид
+T{ s\" function add(a,b) return a+b end" run-stack 2 3 add -> 5 }T
+T{ s\" function neg(v) return -v end" run-stack 7 neg -> -7 }T
+
+\ ограничения --stack: неиспользуемый параметр и конкатенация с целым
+T{ s\" function u(a) return 7 end" expect-stack-error -> true }T
+T{ s\" function cat(a) return a .. \"!\" end" expect-stack-error -> true }T
 
 \ ---------- ошибки парсинга ----------
 T{ s\" naf return x end" expect-error -> true }T

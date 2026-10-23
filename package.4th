@@ -14,5 +14,7 @@ forth-package
     key-list tags lua
     key-list tags forth
     key-list tags gforth
+    key-list flint-exclude tests/golden/
+    key-list dependencies fenum git https://github.com/VitaSound/fenum tag 0.1.2
     key-list dependencies ttester git https://github.com/VitaSound/ttester tag 1.2.1
 end-forth-package

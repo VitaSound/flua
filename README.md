@@ -44,9 +44,50 @@ export PATH="$FLUA_HOME/bin:$PATH"   # одна строка PATH на инст�
 ```bash
 flua file.lua     # компиляция файла → Forth на stdout
 flua              # чтение Lua из stdin
+flua --stack f    # режим --stack (короткий флаг: -s) — стековая эмиссия
 flua help         # справка
 flua version      # версия
 ```
+
+## Режим `--stack`
+
+По умолчанию параметры становятся gforth-locals (`: add { a b } …`).
+Режим `--stack` генерирует чисто стековый вариант: шапка — только
+стековая нотация `( a b -- r )`, тело — `roll` / `pick` / `dup`
+по позициям параметров:
+
+```bash
+flua --stack file.lua          # или flua -s file.lua
+FLUA_MODE=stack flua file.lua  # режим также задаётся окружением
+```
+
+```lua
+function add(a, b) return a + b end
+```
+
+```forth
+\ ( a b -- r )
+: add
+1 roll 1 roll +
+;
+```
+
+Как расставляется подъём:
+
+- параметр используется впервые — `d pick` (копия с глубины d) или `dup`
+  с вершины;
+- последнее использование параметра — `d roll` (перенос на вершину);
+- порядок использования вычисляется лексическим сканом тела функции
+  (`fl-scan-end` / `fl-count`), позиции живут в структурах параметров
+  (fenum `ulist`);
+- модель стека сверяется на каждом шаге: нехватка слотов →
+  `flua: stack model desync …`, итоговая глубина должна быть ≥ 1.
+
+Ограничения режима (типов в подмножестве нет):
+
+- неиспользуемый параметр — ошибка: `parameter 'a' is unused (stack mode)`;
+- `..` с операндом-целым (параметром) — ошибка десинка: строка занимает
+  2 слота, `s+` ждёт 4 — конкатенировать можно строки без параметров-целых.
 
 ## Architecture (чистый Forth)
 
@@ -55,7 +96,8 @@ flua version      # версия
 | Лексер | `src-set` `src-at` `src-peek` `src-next` — побайтовый курсор; `src-trivia` (пробелы + `--`-комментарии); `src-ident`, `fl-parse-number`, `fl-parse-string` |
 | Парсер | рекурсивный спуск: `fl-parse-concat(..)` → `fl-parse-additive(+-)` → `fl-parse-term(*/)` → `fl-parse-unary(-)` → `fl-parse-primary` |
 | Эмит | `emit-ch`/`emit-st` — постфиксная запись в выходной буфер; `defer fl-parse-expr` связан с `fl-parse-concat` |
-| CLI | `bin/flua` → gforth + `flua.4th`; диспетчер по `FLUA_CMD` (`FLUA_ARG` — файл, иначе stdin) |
+| Стековая модель (`--stack`) | `m-model/m-len` — слоты текущего стека; `m-find`/`m-move-to-top`/`m-push-tmp`/`m-popn` (guard-проверка); `fl-count`/`fl-scan-end`/`fl-skip-string` — подсчёт использований; `fl-stack-leaf` — `pick`/`roll`/`dup` |
+| CLI | `bin/flua` → gforth + `flua.4th`; диспетчер по `FLUA_CMD` (`FLUA_ARG` — файл, иначе stdin); режим — `FLUA_MODE=stack` (`--stack`/`-s`) |
 
 ## Project structure
 
@@ -67,13 +109,15 @@ flua version      # версия
 ├── tests/
 │   ├── flua_test.4th       — юнит-тесты на ttester
 │   ├── golden_test.4th     — golden-тесты (исходник ↔ эталон, байт-в-байт)
-│   └── golden/             — пары <name>.lua (исходник) ↔ <name>.4th (эталон)
-│       ├── add.lua / add.4th
-│       ├── priority.lua / priority.4th
-│       ├── unary_hex.lua / unary_hex.4th
-│       ├── strings.lua / strings.4th
-│       ├── comments.lua / comments.4th
-│       └── calls.lua / calls.4th
+│   └── golden/             — пары <name>.lua ↔ <name>.4th (locals) и
+│                             <name>.stack.4th (режим --stack)
+│       ├── add.lua / add.4th / add.stack.4th
+│       ├── priority.lua / priority.4th / priority.stack.4th
+│       ├── unary_hex.lua / unary_hex.4th / unary_hex.stack.4th
+│       ├── strings.lua / strings.4th          (locals-only, см. ограничения)
+│       ├── comments.lua / comments.4th / comments.stack.4th
+│       ├── calls.lua / calls.4th / calls.stack.4th
+│       └── concat.lua / concat.4th / concat.stack.4th
 ├── .gitignore
 └── README.md
 ```
@@ -90,16 +134,21 @@ gforth tests/golden_test.4th     # golden-тесты отдельно
 конструкций, реальное выполнение сгенерированного Forth (`evaluate` +
 `T{ ... -> ... }T`), ожидаемые синтаксические ошибки.
 
-**Golden-тесты** (`golden_test.4th`): для каждой пары `tests/golden/<name>.lua`
-↔ `tests/golden/<name>.4th` — компиляция исходника, байт-в-байт сравнение
-с эталоном (`compare`) и выполнение сгенерированного Forth. Пары перечислены
-явно в `golden-cases` (стиль fhdlgen). Рассинхрон даёт `GOLDEN MISMATCH`.
+**Golden-тесты** (`golden_test.4th`) — два прохода на каждой паре:
+locals-режим (`<name>.4th`) и stack-режим (`<name>.stack.4th`).
+Для каждой пары: компиляция исходника, байт-в-байт сравнение с эталоном
+(`compare`) и выполнение сгенерированного Forth. Пары перечислены явно
+(`golden-one` / `golden-stack-one`). Рассинхрон даёт `GOLDEN MISMATCH`
+(с пометкой `[stack]`).
 
 Добавить golden-пару:
 1. `tests/golden/<name>.lua` — исходник на Lua;
-2. сгенерировать эталон: `flua tests/golden/<name>.lua > tests/golden/<name>.4th`
+2. сгенерировать эталон(ы):
+   `flua tests/golden/<name>.lua > tests/golden/<name>.4th` и
+   `flua --stack tests/golden/<name>.lua > tests/golden/<name>.stack.4th`
    (при изменении формата вывода — осознанно перегенерировать все);
-3. добавить строку `s" <name>" golden-one` в `tests/golden_test.4th`.
+3. добавить строки `s" <name>" golden-one` и (для валидного в --stack
+   кейса) `s" <name>" golden-stack-one` в `tests/golden_test.4th`.
 
 ## License
 

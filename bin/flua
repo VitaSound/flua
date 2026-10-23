@@ -25,6 +25,13 @@ reset_tty() {
 
 reset_tty
 
+# ключи генерации (до подкоманды): --stack — без locals, чистый стековый вид
+FLUA_MODE=locals
+if [ "$1" = "--stack" ] || [ "$1" = "-s" ]; then
+    FLUA_MODE=stack
+    shift
+fi
+
 if [ $# -eq 0 ]; then
     FLUA_CMD=compile
     FLUA_ARG=
@@ -37,7 +44,7 @@ else
     esac
 fi
 
-export FLUA_HOME FLUA_CMD FLUA_ARG
+export FLUA_HOME FLUA_CMD FLUA_ARG FLUA_MODE
 
 set +e
 "$GFORTH" \
