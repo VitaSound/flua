@@ -20,6 +20,10 @@ require ../flua.4th
 \ ( lua-a lua-u -- ) скомпилировать и подключить слова в gforth
 : run-generated ( lua-a lua-u -- ) fl-compile emit-result evaluate ;
 
+\ ( lua-a lua-u needle-a needle-u -- f ) фрагмента НЕТ в выводе
+: lacks-output? ( lua-a lua-u needle-a needle-u -- f )
+    2>r fl-compile emit-result 2r> search >r 2drop r> 0= ;
+
 \ ( lua-a lua-u -- f ) ожидаем синтаксической ошибки
 : expect-error ( lua-a lua-u -- f )
     ['] fl-compile catch if 2drop true else 2drop false then ;
@@ -58,12 +62,32 @@ x y + z *
 
 T{ s\" -- header comment
 function n(a) return -a + 0x10 end"
-   s\" \\ ( a -- r )
+   s\" \\ header comment
+\\ ( a -- r )
 : n { a }
 a negate $10 + 
 ;
 "
    transpiles? -> true }T
+
+\ ---------- комментарий перед функцией ----------
+\ внутренний комментарий (после return) в вывод не попадает
+T{ s\" function f(a) return a -- внутр
+ end"
+   s" -- внутр" lacks-output? -> true }T
+
+\ комментарий в конце файла — уже не перед функцией, не эмитится
+T{ s\" function g(a) return a end
+-- последний"
+   s" последний" lacks-output? -> true }T
+
+\ серия комментариев между функциями относится к следующей
+T{ s\" function p(a) return a end
+-- про p
+function q(a) return a end"
+   s\" \\ про p
+\\ ( a -- r )
+: q { a }" has-output? -> true }T
 
 \ ---------- фрагменты вывода (ключевые конструкции) ----------
 T{ s\" function greet() return \"hi\" end"   s" hi"   has-output? -> true }T
@@ -101,7 +125,7 @@ T{ cat-runs? -> true }T
 T{ s\" function add(a,b) return a+b end"
    s\" \\ ( a b -- r )
 : add 
-1 roll 1 roll + 
++ 
 ;
 "
    transpiles-stack? -> true }T
@@ -122,9 +146,19 @@ T{ s\" function noargs() return 7 end"
 "
    transpiles-stack? -> true }T
 
+\ обратный порядок операндов → swap (для d=1 эмитится swap, не 1 roll)
+T{ s\" function rb(a,b) return b + a end"
+   s\" \\ ( a b -- r )
+: rb 
+swap + 
+;
+"
+   transpiles-stack? -> true }T
+
 \ выполнение стекового генерата: два roll = swap, дважды = ид
 T{ s\" function add(a,b) return a+b end" run-stack 2 3 add -> 5 }T
 T{ s\" function neg(v) return -v end" run-stack 7 neg -> -7 }T
+T{ s\" function rb(a,b) return b + a end" run-stack 2 3 rb -> 5 }T
 
 \ ограничения --stack: неиспользуемый параметр и конкатенация с целым
 T{ s\" function u(a) return 7 end" expect-stack-error -> true }T

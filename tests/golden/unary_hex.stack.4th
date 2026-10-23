@@ -1,3 +1,4 @@
+\ унарный минус и hex-литерал
 \ ( v -- r )
 : negate_it 
 negate 

@@ -83,6 +83,7 @@ s" strings"    golden-one
 s" comments"   golden-one
 s" calls"      golden-one
 s" concat"     golden-one
+s" reorder"    golden-one
 
 cr
 ." ---------- stack-режим ----------" cr
@@ -93,6 +94,7 @@ s" unary_hex"  golden-stack-one
 s" comments"   golden-stack-one
 s" calls"      golden-stack-one
 s" concat"     golden-stack-one
+s" reorder"    golden-stack-one
 
 cr
 #ERRORS @ 0= [IF]

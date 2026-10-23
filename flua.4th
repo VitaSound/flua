@@ -68,9 +68,21 @@ variable emit-pos
 
 create m-model 512 allot
 variable m-len
-: m-reset ( -- ) 0 m-len ! ;
+variable fl-vs     \ тэг значения последнего подвыражения
+variable fl-vsz    \ размер этого значения в ячейках (1 — целое, 2 — строка)
+variable fl-mtag   \ следующий уникальный тэг временного значения (128..255)
+: m-reset ( -- ) 0 m-len ! 128 fl-mtag ! ;
 : m-append ( c -- ) m-len @ m-model + c! 1 m-len +! ;
-: m-push-tmp ( -- ) 128 m-append ;
+: m-push-tmp ( -- )                     \ темп с УНИКАЛЬНЫМ тэгом: слот всегда пересчитывается
+    fl-mtag @ 255 > if
+        cr ." flua: too many temporary values" cr -1 throw
+    then
+    fl-mtag @ dup 1+ fl-mtag ! m-append ;
+: m-push-res ( sz -- )                  \ результат из sz ячеек: фиксирует fl-vs/fl-vsz
+    dup fl-vsz !
+    dup 0 ?do m-push-tmp loop
+    drop
+    fl-mtag @ fl-vsz @ - fl-vs ! ;
 : m-popn ( k -- )
     stack-mode? @ if                        \ проверка — только в режиме --stack
         dup m-len @ > if
@@ -96,6 +108,95 @@ variable m-len
     m-len @ 1- 3 pick -                     \ ( p from to count )
     cmove drop                              \ ( )
     r> m-len @ 1- m-model + c! ;            \ тэг в последний слот: ( tag addr -> c! )
+
+: emit-uint ( n -- ) s>d <# #s #> emit-st ;
+
+\ ==================== выравнивание операндов (режим --stack) ====================
+\ Перед токеном потребителя (оператор / вызов / return) операнды должны лежать
+\ верхним блоком в порядке чтения: первый операнд — ниже, последний — на вершине.
+\ Слоты живут в fl-oslot/fl-osz; при набивке тэги превращаются в слоты через
+\ m-find — поэтому сохранённый тэг левого операнда не протухает при подъёмах.
+create fl-oslot 8 cells allot
+create fl-osz   8 cells allot
+variable fl-on                           \ число операндов текущего потребителя
+variable fl-obase                        \ база блока операндов в модели
+create fl-aslot 64 cells allot           \ буфер аргументов вызовов (8 уровней x 8)
+create fl-asz   64 cells allot
+variable fl-cdepth                       \ глубина вложенности вызовов
+
+: fl-o! ( slot size n -- )
+    >r fl-osz r@ cells + ! fl-oslot r@ cells + ! r> drop ;
+: fl-o@ ( n -- slot size )
+    >r fl-oslot r@ cells + @ fl-osz r@ cells + @ r> drop ;
+: fl-as! ( tag size n -- )
+    >r fl-asz r@ cells + ! fl-aslot r@ cells + ! r> drop ;
+: fl-as@ ( n -- tag size )
+    >r fl-aslot r@ cells + @ fl-asz r@ cells + @ r> drop ;
+
+: fl-ototal ( -- sz ) 0 fl-on @ 0 ?do i fl-o@ nip + loop ;
+: fl-ooff ( n -- off ) 0 swap 0 ?do i fl-o@ nip + loop ;
+
+: fl-ocheck ( -- f )                     \ блок операндов уже лежит на своих местах?
+    fl-ototal negate m-len @ + fl-obase !
+    true
+    fl-on @ 0 ?do
+        i fl-o@ drop i fl-ooff fl-obase @ + = and
+    loop ;
+
+\ поднять ячейку из слота from наверх: эмит (swap при d=1, иначе d roll),
+\ перенос байта в модели и поправка слотов остальных операндов
+: fl-oroll-cell ( from -- )
+    dup m-len @ 1- over -                 \ ( from d )
+    dup 0 > if
+        dup 1 = if
+            drop s" swap " emit-st
+        else
+            emit-uint emit-bl s" roll " emit-st
+        then
+    else drop then
+    m-move-to-top
+    fl-on @ 0 ?do
+        i fl-o@ drop                      \ ( from slot )
+        2dup = if drop m-len @ 1-
+        else 2dup < if 1- then then
+        fl-oslot i cells + !
+    loop
+    drop ;
+
+variable fl-or-n variable fl-or-z variable fl-or-s
+\ поднять операнда №n наверх (строка из 2 ячеек катится глубокой первой)
+: fl-oroll-op ( n -- )
+    fl-or-n !
+    fl-or-n @ fl-o@ nip fl-or-z !
+    fl-or-z @ 0 ?do
+        fl-oslot fl-or-n @ cells + @ fl-or-s !
+        fl-or-s @ fl-oroll-cell
+        i 0= fl-or-z @ 1 > and if
+            fl-or-s @                    \ многоячеечный: партнёр встал в этот слот
+        else
+            m-len @ fl-or-z @ -          \ последняя ячейка наверху: глубина = L-sz
+        then
+        fl-oslot fl-or-n @ cells + !
+    loop ;
+
+\ Главное правило оптимизации: поднимаем только то, что ниже своей цели.
+\ Если блок уже на месте (add, priority) — подъёмов нет вовсе.
+: fl-arrange ( -- )
+    stack-mode? @ 0= if exit then
+    fl-on @ 0= if exit then
+    fl-ocheck if exit then                \ случай add/priority: подъёмов нет
+    fl-on @ 0 ?do
+        i fl-o@ drop i fl-ooff fl-obase @ + < if
+            i fl-oroll-op                \ слот ниже цели → поднять
+        then
+    loop
+    fl-ocheck 0= if
+        cr ." flua: stack arrange failed: base=" fl-obase @ . ." len=" m-len @ . cr
+        fl-on @ 0 ?do
+            i fl-o@ ."   os[" i . ." ]=slot " swap . ." size " . cr
+        loop
+        -1 throw
+    then ;
 
 \ ============================== курсор по исходнику ==============================
 
@@ -140,6 +241,60 @@ variable src-pos
         src-comment? if src-skip-comment false else true then
     until ;
 
+\ ---------- комментарий перед функцией ----------
+\ Комментарии из Lua не копируются как есть: "--" в Forth — это не
+\ комментарий, а несуществующее слово. Переносим только комментарий,
+\ стоящий непосредственно перед строкой function (включая серию
+\ подряд идущих -- строк между функциями): он становится шапкой
+\ "\ ..." непосредственно перед стек-комментарием. Всё остальное
+\ (внутри тела, в конце файла) отбрасывается в лексере как trivia.
+
+create cm-buf 4096 allot                 \ выходные строки комментариев
+variable cm-u                            \ сколько занято
+variable cm-cs                            \ вспомогательное: смещение начала текста
+
+: cm-reset ( -- ) 0 cm-u ! ;
+: cm-put ( c -- ) cm-buf cm-u @ + c! 1 cm-u +! ;
+
+\ текст комментария → буфер строкой "\ текст<LF>"
+: cm-add ( a u -- )
+    dup 0= if 2drop exit then             \ пустой "--" — пропустить
+    2dup + 1- c@ 13 = if 1- then          \ CRLF: убрать \r
+    dup 0= if 2drop exit then
+    over c@ bl = if 1 /string then      \ один ведущий пробел после "--"
+    cm-u @ 3 + over + 4096 > if 2drop exit then \ не влезает — не ломаем
+    [char] \ cm-put bl cm-put
+    bounds ?do i c@ cm-put loop
+    10 cm-put ;
+
+\ эмит накопленного в выходной буфер и сброс (перед шапкой функции)
+: cm-flush ( -- )
+    cm-u @ 0= if exit then
+    cm-buf cm-u @ emit-st cm-reset ;
+
+\ пропуск "--…<CR>", текст комментария → в буфер
+: src-skip-comment-cm ( -- )
+    src-next drop src-next drop          \ съесть "--"
+    src-pos @ cm-cs !
+    begin
+        src-peek -1 = src-peek 10 = or if
+            true                         \ конец комментария (EOF или LF)
+        else
+            src-next drop false
+        then
+    until
+    src-pos @ cm-cs @ -                  \ текст после "--" до конца строки
+    src-a @ cm-cs @ + swap
+    cm-add ;
+
+\ как src-trivia, но комментарии копируются в буфер (только для
+\ позиции «перед function» — см. fl-compile)
+: src-trivia-cm ( -- )
+    begin
+        src-skip-ws
+        src-comment? if src-skip-comment-cm false else true then
+    until ;
+
 \ ============================== синтаксическая ошибка ==============================
 
 : fl-syntax-error ( -- )
@@ -164,7 +319,7 @@ variable strq                             \ закрывающая кавычк�
         src-eof? abort" flua: unterminated string"
         src-next
         dup strq @ = if                   \ закрывающая кавычка
-            drop [char] " emit-ch emit-bl m-push-tmp m-push-tmp exit
+            drop [char] " emit-ch emit-bl 2 m-push-res exit
         then
         dup [char] \ = if                 \ escape из Lua → escape в s\"
             drop src-next
@@ -188,11 +343,11 @@ variable strq                             \ закрывающая кавычк�
             [char] $ emit-ch
             src-next drop src-next drop
             begin src-peek fl-hexd? while src-next emit-ch repeat
-            emit-bl m-push-tmp exit
+            emit-bl 1 m-push-res exit
         then
     then
     begin src-peek fl-digit? while src-next emit-ch repeat
-    emit-bl m-push-tmp ;
+    emit-bl 1 m-push-res ;
 
 \ ============================== параметры как структуры (fenum ulist) ==============================
 \ Структура параметра (param%):
@@ -307,15 +462,21 @@ variable pi-na  variable pi-nu  variable pi-idx  variable pi-hit
 defer fl-parse-expr                       \ связан с fl-parse-concat ниже
 
 variable fl-karg                           \ аргументов в текущем вызове
+variable fl-cbase                          \ базовый индекс уровня в буфере аргументов
 
 : fl-parse-call ( a u -- )                \ имя прочитано, курсор на '('
     2>r src-next drop 0 fl-karg !         \ съесть '('
+    fl-cdepth @ 8 * fl-cbase ! 1 fl-cdepth +!
     src-trivia
     0 src-at [char] ) = if
         src-next drop                     \ пустой список аргументов
     else
         begin
-            fl-parse-expr 1 fl-karg +!
+            fl-parse-expr
+            stack-mode? @ if              \ тэг аргумента — в буфер уровня
+                fl-vs @ fl-vsz @ fl-cbase @ fl-karg @ + fl-as!
+            then
+            1 fl-karg +!
             src-trivia
             0 src-at [char] , = if
                 src-next drop src-trivia false
@@ -324,12 +485,19 @@ variable fl-karg                           \ аргументов в текущ�
         0 src-at [char] ) <> abort" flua: expected ')'"
         src-next drop
     then
+    stack-mode? @ if                      \ тэги → актуальные слоты → выравнивание
+        fl-karg @ 0 ?do
+            fl-cbase @ i + fl-as@ swap m-find swap i fl-o!
+        loop
+        fl-karg @ fl-on !
+        fl-arrange
+    then
+    -1 fl-cdepth +!
     2r> emit-st emit-bl                   \ имя в постфиксной позиции
-    fl-karg @ m-popn m-push-tmp ;         \ аргументы съедены → один результат
+    fl-karg @ m-popn                      \ аргументы съедены → один результат
+    1 m-push-res ;
 
 \ ==== режим --stack: подсчёт использований и лист-параметр ====
-
-: emit-uint ( n -- ) s>d <# #s #> emit-st ;
 
 : param-count! ( n p -- ) 2 cells + ! ;
 
@@ -343,26 +511,33 @@ variable fl-karg                           \ аргументов в текущ�
         -1 throw
     then drop ;
 
-\ Лист-параметр в stack-режиме: поднять значение к месту использования.
-\ Последнее использование параметра — extract (d roll), иначе — duplicate.
-\ ( d = m-len-1-позиция : 0 = уже на вершине, ничего не эмитим )
+\ Лист-параметр в режиме --stack:
+\  - первое использование: копия наверх сразу (dup / over / d pick) — значение
+\    нужно ещё раз, оригинал остаётся на своём слоте;
+\  - последнее использование: подъём здесь НЕ эмитим — в fl-vs кладём ТЭГ,
+\    подъём выполнит потребитель (fl-arrange) перед своим токеном.
+variable fl-li
 : fl-stack-leaf ( a u -- )
     fl-param-idx dup 0< if 2drop fl-syntax-error then
-    dup fl-params-ul @ ulist-nth-addr param-used+!
-    dup fl-params-ul @ ulist-nth-addr param-count@
-    over fl-params-ul @ ulist-nth-addr param-used@ = if
-        dup m-find m-len @ 1- over -                         \ ( i slot d )
-        dup 0= if 2drop drop else
-            dup emit-uint emit-bl s" roll " emit-st
-            over m-move-to-top 2drop drop
-        then
+    fl-li !
+    fl-li @ fl-params-ul @ ulist-nth-addr param-used+!
+    fl-li @ fl-params-ul @ ulist-nth-addr param-count@
+    fl-li @ fl-params-ul @ ulist-nth-addr param-used@ = if
+        fl-li @ fl-vs ! 1 fl-vsz !       \ последнее использование: подъём отложен
     else
-       
-        dup m-find m-len @ 1- over -
-        dup 0= if 2drop drop s" dup " emit-st else
-            emit-uint emit-bl s" pick " emit-st 2drop
+        fl-li @ m-find                   \ ( slot )
+        dup m-len @ 1- over -            \ ( slot d )
+        dup 0= if
+            drop s" dup " emit-st
+        else
+            dup 1 = if
+                drop s" over " emit-st   \ d=1 → over (это 1 pick)
+            else
+                emit-uint emit-bl s" pick " emit-st
+            then
         then
-        m-push-tmp
+        drop
+        1 m-push-res                     \ копия = новый темп
     then ;
 
 : fl-parse-ident-expr ( a u -- )
@@ -390,47 +565,102 @@ defer fl-parse-unary                   \ рекурсивное слово; св
     src-trivia
     0 src-at [char] - = if
         src-next drop fl-parse-unary
-        s" negate " emit-st m-pop m-push-tmp
+        stack-mode? @ if
+            fl-vs @ m-find fl-vsz @ 0 fl-o!
+            1 fl-on !
+            fl-arrange
+        then
+        s" negate " emit-st m-pop 1 m-push-res
     else fl-parse-primary then ;
 
 ' fl-parse-unary-1 is fl-parse-unary  \ связка рекурсии на верхнем уровне
 
 : fl-parse-term ( -- )
     fl-parse-unary
+    stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
     begin
         src-trivia
         0 src-at [char] * = if
-            src-next drop fl-parse-unary s" * " emit-st 2 m-popn m-push-tmp false
+            src-next drop fl-parse-unary
+            stack-mode? @ if
+                fl-vs @ m-find fl-vsz @ 1 fl-o!    \ правый операнд → №1
+                2r> swap m-find swap 0 fl-o!                 \ левый (тэг из R) → №0
+                2 fl-on !
+                fl-arrange
+            then
+            s" * " emit-st 2 m-popn 1 m-push-res
+            stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
+            false
         else
             0 src-at [char] / = if
-                src-next drop fl-parse-unary s" / " emit-st 2 m-popn m-push-tmp false
+                src-next drop fl-parse-unary
+                stack-mode? @ if
+                    fl-vs @ m-find fl-vsz @ 1 fl-o!
+                    2r> swap m-find swap 0 fl-o!
+                    2 fl-on !
+                    fl-arrange
+                then
+                s" / " emit-st 2 m-popn 1 m-push-res
+                stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
+                false
             else true then
         then
-    until ;
+    until
+    stack-mode? @ if 2r> 2drop then ;
 
 : fl-parse-additive ( -- )
     fl-parse-term
+    stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
     begin
         src-trivia
         0 src-at [char] + = if
-            src-next drop fl-parse-term s" + " emit-st 2 m-popn m-push-tmp false
+            src-next drop fl-parse-term
+            stack-mode? @ if
+                fl-vs @ m-find fl-vsz @ 1 fl-o!
+                2r> swap m-find swap 0 fl-o!
+                2 fl-on !
+                fl-arrange
+            then
+            s" + " emit-st 2 m-popn 1 m-push-res
+            stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
+            false
         else
             0 src-at [char] - = if
-                src-next drop fl-parse-term s" - " emit-st 2 m-popn m-push-tmp false
+                src-next drop fl-parse-term
+                stack-mode? @ if
+                    fl-vs @ m-find fl-vsz @ 1 fl-o!
+                    2r> swap m-find swap 0 fl-o!
+                    2 fl-on !
+                    fl-arrange
+                then
+                s" - " emit-st 2 m-popn 1 m-push-res
+                stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
+                false
             else true then
         then
-    until ;
+    until
+    stack-mode? @ if 2r> 2drop then ;
 
 : fl-parse-concat ( -- )
     fl-parse-additive
+    stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
     begin
         src-trivia
         0 src-at [char] . = 1 src-at [char] . = and if
             src-next drop src-next drop
             src-trivia fl-parse-additive
-            s" s+ " emit-st 4 m-popn m-push-tmp m-push-tmp false
+            stack-mode? @ if
+                fl-vs @ m-find fl-vsz @ 1 fl-o!
+                2r> swap m-find swap 0 fl-o!
+                2 fl-on !
+                fl-arrange
+            then
+            s" s+ " emit-st 4 m-popn 2 m-push-res
+            stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
+            false
         else true then
-    until ;
+    until
+    stack-mode? @ if 2r> 2drop then ;
 
 ' fl-parse-concat is fl-parse-expr        \ связка defer (только на верхнем уровне)
 
@@ -440,6 +670,7 @@ variable fl-fname-a
 variable fl-fname-u
 variable fl-param-count
 : fl-parse-function ( -- )
+    cm-flush                              \ комментарий перед function — в шапку
     src-trivia src-ident                  \ имя функции
     fl-fname-u ! fl-fname-a !
     src-trivia
@@ -486,7 +717,13 @@ variable fl-param-count
     \ тело: return expr
     src-trivia
     src-ident 2dup s" return" compare 0<> if 2drop fl-syntax-error then 2drop
-    fl-parse-expr emit-nl
+    fl-parse-expr
+    stack-mode? @ if                     \ результат должен оказаться на вершине
+        fl-vs @ m-find fl-vsz @ 1 fl-o!
+        1 fl-on !
+        fl-arrange
+    then
+    emit-nl
     \ конец: end
     src-trivia
     src-ident 2dup s" end" compare 0<> if 2drop fl-syntax-error then 2drop
@@ -502,9 +739,10 @@ variable fl-param-count
 \ ============================== компилятор ==============================
 
 : fl-compile ( a u -- )
-    src-set emit-reset
+    src-set emit-reset 0 fl-cdepth !
     begin
-        src-trivia
+        cm-reset                           \ мусор тела прошлой функции — в утиль
+        src-trivia-cm                     \ комментарии перед function → в буфер
         src-eof? if exit then
         src-ident 2dup s" function" compare 0<> if 2drop fl-syntax-error then 2drop
         fl-parse-function
