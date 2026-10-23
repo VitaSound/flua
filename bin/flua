@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# flua — Lua-subset to Forth transpiler (VitaSound Forth tooling).
+#
+# Conventions (one line per tool in ~/.bashrc):
+#   export FLUA_HOME="$HOME/flua"
+#   export PATH="$FLUA_HOME/bin:$PATH"
+
+: "${FLUA_HOME:=$HOME/flua}"
+GFORTH="${GFORTH:-gforth}"
+
+reset_tty() {
+    local tty_path
+    tty_path=$(tty 2>/dev/null || true)
+    case "$tty_path" in
+        ""|"not a tty") return ;;
+    esac
+    [ -r "$tty_path" ] && [ -w "$tty_path" ] || return
+    stty sane < "$tty_path" 2>/dev/null || true
+    printf '\033[?2004l' > "$tty_path" 2>/dev/null || true
+    local _ch
+    while IFS= read -r -s -t 0.02 -n 1 _ch < "$tty_path"; do
+        :
+    done
+}
+
+reset_tty
+
+if [ $# -eq 0 ]; then
+    FLUA_CMD=compile
+    FLUA_ARG=
+else
+    case "$1" in
+        help)    FLUA_CMD=help;    FLUA_ARG= ;;
+        version) FLUA_CMD=version; FLUA_ARG= ;;
+        compile) shift; FLUA_CMD=compile; FLUA_ARG="${1:-}" ;;
+        *)       FLUA_CMD=compile; FLUA_ARG="$1" ;;
+    esac
+fi
+
+export FLUA_HOME FLUA_CMD FLUA_ARG
+
+set +e
+"$GFORTH" \
+    -e "s\" $FLUA_HOME\" fpath also-path" \
+    "$FLUA_HOME/flua.4th"
+status=$?
+set -e
+
+reset_tty
+exit "$status"

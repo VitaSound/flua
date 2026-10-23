@@ -1,0 +1,15 @@
+# Forth tooling (VitaSound convention)
+forth-packages/
+.fcov/
+.fmcp/
+
+# Generated output
+*.4th.out
+tests/tmp/
+
+# Editor
+.cursor/
+.idea/
+*.swp
+# Codewhale session state
+.codewhale/
