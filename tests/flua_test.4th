@@ -168,6 +168,15 @@ T{ s\" function cat(a) return a .. \"!\" end" expect-stack-error -> true }T
 T{ s\" naf return x end" expect-error -> true }T
 T{ s\" function broken( return end" expect-error -> true }T
 
+\ ---------- CLI: файл не найден ----------
+\ flua.src при заданном FLUA_ARG с несуществующим файлом:
+\ file-status → сообщение + тихий -1 throw (без трассы gforth)
+: cli-no-file? ( -- f )
+    s" FLUA_ARG" s" /tmp/flua-no-such-file.lua" 1 setenv drop
+    ['] flua.src catch if true else 2drop false then
+    s" FLUA_ARG" unsetenv drop ;
+T{ cli-no-file? -> true }T
+
 \ ---------- итог ----------
 #ERRORS @ 0= [IF]
     ." ALL TESTS PASSED" cr

@@ -19,7 +19,7 @@ s" 0.1.0" 2constant flua-version
 : fl-load-fenum ( -- )
     s" forth-packages/fenum/0.1.2/fenum.4th"
     2dup file-status nip 0= if required exit then
-    2drop s" ../fenum/fenum.4th" required ;
+    2drop s" ../fenum/fenum-ulist-bs.4th" required ;
 
 fl-load-fenum
 
@@ -748,6 +748,11 @@ variable fl-param-count
         fl-parse-function
     again ;
 
+\ ============================== AST (--ast) ==============================
+\ Отдельный конвейер поверх токенов: токенизатор + парсер в AST + печать
+\ дерева в emit-buf. Путь компиляции не задействован.
+require ./flua-ast.4th
+
 \ ============================== CLI ==============================
 
 : flua.help ( -- )
@@ -758,6 +763,7 @@ variable fl-param-count
     ."   flua [file.lua]    компиляция файла, Forth на stdout" cr
     ."   flua               чтение Lua из stdin" cr
     ."   flua --stack f     стековая эмиссия: без { }, pick/roll (флаг: -s)" cr
+    ."   flua --ast f       вывод AST (дерево разбора) вместо кода (флаг: -a)" cr
     ."   flua help          эта справка" cr
     ."   flua version       версия" cr cr
     ." Подмножество Lua: function name(a, b) return expr end," cr
@@ -765,12 +771,21 @@ variable fl-param-count
 
 : flua.version ( -- ) ." flua v" flua-version type cr ;
 
-: flua.compile-cli ( -- )
+\ содержимое файла FLUA_ARG (нет аргумента → stdin);
+\ файла нет или не читается → понятная ошибка вместо исключения gforth
+: flua.src ( -- a u )
     s" FLUA_ARG" getenv
-    dup 0= if 2drop stdin slurp-fid        \ аргумента нет → stdin
-    else slurp-file then                   \ имя файла → содержимое
-    fl-compile
-    emit-result type cr ;
+    dup 0= if 2drop stdin slurp-fid exit then
+    2dup file-status nip if
+        ." flua: file not found: " type cr -1 throw
+    then
+    slurp-file ;
+
+: flua.compile-cli ( -- )
+    flua.src fl-compile emit-result type cr ;
+
+: flua.ast-cli ( -- )
+    flua.src fl-ast-run emit-result type cr ;
 
 : flua.read-mode ( -- )
     s" FLUA_MODE" getenv dup 0= if 2drop exit then
@@ -781,6 +796,7 @@ variable fl-param-count
     s" FLUA_CMD" getenv
     2dup s" help" compare 0= if 2drop flua.help bye then
     2dup s" version" compare 0= if 2drop flua.version bye then
+    2dup s" ast" compare 0= if 2drop flua.ast-cli bye then
     2drop
     flua.compile-cli bye ;
 

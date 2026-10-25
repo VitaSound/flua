@@ -32,7 +32,16 @@ if [ "$1" = "--stack" ] || [ "$1" = "-s" ]; then
     shift
 fi
 
-if [ $# -eq 0 ]; then
+# --ast / -a / ast — вывод AST (дерево разбора) вместо компиляции;
+# режим генерации для AST несущественен, допускается любой порядок флагов
+if [ "$1" = "--ast" ] || [ "$1" = "-a" ] || [ "$1" = "ast" ]; then
+    shift
+    if [ "$1" = "--stack" ] || [ "$1" = "-s" ]; then
+        shift
+    fi
+    FLUA_CMD=ast
+    FLUA_ARG="${1:-}"
+elif [ $# -eq 0 ]; then
     FLUA_CMD=compile
     FLUA_ARG=
 else

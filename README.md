@@ -50,6 +50,7 @@ export PATH="$FLUA_HOME/bin:$PATH"   # одна строка PATH на инст�
 flua file.lua     # компиляция файла → Forth на stdout
 flua              # чтение Lua из stdin
 flua --stack f    # режим --stack (короткий флаг: -s) — стековая эмиссия
+flua --ast f      # вывод AST (дерево разбора) вместо кода (флаг: -a)
 flua help         # справка
 flua version      # версия
 ```
@@ -162,6 +163,34 @@ roll поднимал `a` над `b`, второй возвращал `b` нав
 - модель сверяется на каждом шаге: нехватка слотов →
   `flua: stack model desync …`; финальная глубина ≥ 1.
 
+## Режим `--ast` (вывод AST)
+
+Отдельный конвейер поверх токенов (`flua-tokens.4th` → `flua-ast.4th`):
+парсер строит дерево разбора и печатает его вместо Forth-кода; путь
+компиляции не задействуется, режим `--stack` на вывод не влияет.
+
+```bash
+flua --ast file.lua    # также: flua ast file.lua, короткий флаг -a
+```
+
+```lua
+function add(a, b) return a + b end
+```
+
+```
+fn add(a, b)
+  bin +
+    id a
+    id b
+```
+
+Узлы: `fn` (имя с параметрами в скобках, тело — под-дерево), `bin`/`un`
+(бинарный/унарный оператор), `call` (вызов, аргументы — под-деревья),
+`num`/`str`/`id` — листья, текст цитируется из исходника (`str` — с кавычками
+и escape'ами). Скобки группировки прозрачны. Отступ — 2 пробела на уровень;
+функции печатаются в порядке чтения. Синтаксическая ошибка — как в
+компиляторе: `flua: syntax error at offset N` и код возврата ≠ 0.
+
 ## Architecture (чистый Forth)
 
 | Слой | Слова |
@@ -170,7 +199,8 @@ roll поднимал `a` над `b`, второй возвращал `b` нав
 | Парсер | рекурсивный спуск: `fl-parse-concat(..)` → `fl-parse-additive(+-)` → `fl-parse-term(*/)` → `fl-parse-unary(-)` → `fl-parse-primary` |
 | Эмит | `emit-ch`/`emit-st` — постфиксная запись в выходной буфер; `defer fl-parse-expr` связан с `fl-parse-concat` |
 | Стековая модель (`--stack`) | `m-model/m-len/m-tag` — слоты и уникальные тэги значений; `fl-stack-leaf` — первое использование: `dup`/`over`/`d pick`, последнее: подъём отложен; `fl-arrange`/`fl-ocheck`/`fl-oroll-op` — выравнивание блока операндов (см. «Режим --stack»); `m-find`/`m-move-to-top`/`m-popn` (guard), `fl-count`/`fl-scan-end`/`fl-skip-string` — подсчёт использований |
-| CLI | `bin/flua` → gforth + `flua.4th`; диспетчер по `FLUA_CMD` (`FLUA_ARG` — файл, иначе stdin); режим — `FLUA_MODE=stack` (`--stack`/`-s`) |
+| AST (`--ast`) | отдельный конвейер в `flua-tokens.4th`/`flua-ast.4th`: `fl-tokenize` → `fl-p-*` (рекурсивный спуск, узлы-записи `an-node`, реестр `an-nodes`/`an-reset`) → `an-print` (дерево в emit-buf); `fl-ast-run` |
+| CLI | `bin/flua` → gforth + `flua.4th`; диспетчер по `FLUA_CMD` (`FLUA_ARG` — файл, иначе stdin); режим — `FLUA_MODE=stack` (`--stack`/`-s`); `FLUA_CMD=ast` — вывод AST (`--ast`/`-a`/подкоманда `ast`) |
 
 ## Project structure
 
@@ -178,10 +208,13 @@ roll поднимал `a` над `b`, второй возвращал `b` нав
 /home/sea/flua/
 ├── package.4th             — манифест VitaSound (name flua, COPL, deps fmix/flint/fcov/ttester)
 ├── bin/flua                — CLI-лаунчер (конвенция: одна строка PATH на тул)
-├── flua.4th                — вся реализация: лексер + парсер + CLI
+├── flua.4th                — основной конвейер: лексер + парсер + CLI
+├── flua-tokens.4th         — токенизатор (фаза 1 конвейера AST)
+├── flua-ast.4th            — AST: парсер поверх токенов + печать дерева (--ast)
 ├── tests/
 │   ├── flua_test.4th       — юнит-тесты на ttester
 │   ├── golden_test.4th     — golden-тесты (исходник ↔ эталон, байт-в-байт)
+│   ├── ast_test.4th        — тесты вывода AST (байт-в-байт + ошибки)
 │   └── golden/             — пары <name>.lua ↔ <name>.4th (locals) и
 │                             <name>.stack.4th (режим --stack)
 │       ├── add.lua / add.4th / add.stack.4th
@@ -199,9 +232,10 @@ roll поднимал `a` над `b`, второй возвращал `b` нав
 ## Tests
 
 ```bash
-fmix test                        # весь набор (flua_test + golden_test)
+fmix test                        # весь набор (flua_test + golden_test + ast_test)
 gforth tests/flua_test.4th       # юнит-тесты отдельно
 gforth tests/golden_test.4th     # golden-тесты отдельно
+gforth tests/ast_test.4th        # тесты вывода AST отдельно
 ```
 
 **Юнит-тесты** (`flua_test.4th`): точное совпадение вывода, наличие ключевых
@@ -214,6 +248,12 @@ locals-режим (`<name>.4th`) и stack-режим (`<name>.stack.4th`).
 (`compare`) и выполнение сгенерированного Forth. Пары перечислены явно
 (`golden-one` / `golden-stack-one`). Рассинхрон даёт `GOLDEN MISMATCH`
 (с пометкой `[stack]`).
+
+**AST-тесты** (`ast_test.4th`): точное сравнение вывода `fl-ast-run`
+с ожидаемым деревом (байт-в-байт), негативные кейсы через `catch`
+(`ast-error?`), включая работоспособность парсера и реестра узлов
+после ошибки. Строки `flua: syntax error at offset N` в прогоне —
+ожидаемый вывод негативных кейсов.
 
 Добавить golden-пару:
 1. `tests/golden/<name>.lua` — исходник на Lua;
