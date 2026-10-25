@@ -391,8 +391,10 @@ variable fl-nna variable fl-nnu             \ needle: имя параметра 
     again ;
 
 \ найти начало токена `end` (мимо строк/комментариев), позицию восстановить
+variable fl-if-n                     \ глубина вложенности if..end при сканировании тела
 : fl-scan-end ( -- pos )
     src-pos @ fl-sv !
+    0 fl-if-n !
     begin
         src-trivia
         src-eof? if fl-sv @ src-pos ! 0 exit then
@@ -400,11 +402,21 @@ variable fl-nna variable fl-nnu             \ needle: имя параметра 
             fl-skip-string
         else 0 src-at fl-alpha? if
                 src-ident
+                2dup s" if" compare 0= if      \ вложенная if — углубиться
+                    2drop
+                    1 fl-if-n +!
+                else
                 2dup s" end" compare 0= if
-                    swap src-a @ - nip              \ ( позиция начала идента )
-                    fl-sv @ src-pos !
-                    exit
+                    swap src-a @ - nip          \ (pos) — позиция начала идента end
+                    fl-if-n @ 0= if            \ конец функции (не if-блока)
+                        fl-sv @ src-pos !
+                        exit                   \ (pos) — возвращаем для fl-body-hi
+                    else
+                        drop                   \ end if-блока — убрать pos
+                        -1 fl-if-n +!
+                    then
                 else 2drop then
+                then
             else
                 src-next drop
             then
@@ -536,7 +548,7 @@ variable fl-li
                 emit-uint emit-bl s" pick " emit-st
             then
         then
-        drop
+        2drop                            \ снять обе ячейки (slot d-контекст): после веток остаётся (slot slot)
         1 m-push-res                     \ копия = новый темп
     then ;
 
@@ -662,9 +674,206 @@ defer fl-parse-unary                   \ рекурсивное слово; св
     until
     stack-mode? @ if 2r> 2drop then ;
 
-' fl-parse-concat is fl-parse-expr        \ связка defer (только на верхнем уровне)
+: fl-parse-relational ( -- )
+    fl-parse-concat
+    stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
+    begin
+        src-trivia
+        0 src-at [char] < = 1 src-at [char] = = and if          \ <=
+            src-next drop src-next drop
+            src-trivia fl-parse-concat
+            stack-mode? @ if
+                fl-vs @ m-find fl-vsz @ 1 fl-o!
+                2r> swap m-find swap 0 fl-o!
+                2 fl-on !
+                fl-arrange
+            then
+            s" <= " emit-st 2 m-popn 1 m-push-res
+            stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
+            false
+        else
+        0 src-at [char] > = 1 src-at [char] = = and if          \ >=
+            src-next drop src-next drop
+            src-trivia fl-parse-concat
+            stack-mode? @ if
+                fl-vs @ m-find fl-vsz @ 1 fl-o!
+                2r> swap m-find swap 0 fl-o!
+                2 fl-on !
+                fl-arrange
+            then
+            s" >= " emit-st 2 m-popn 1 m-push-res
+            stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
+            false
+        else
+        0 src-at [char] < = if                                  \ <
+            src-next drop
+            src-trivia fl-parse-concat
+            stack-mode? @ if
+                fl-vs @ m-find fl-vsz @ 1 fl-o!
+                2r> swap m-find swap 0 fl-o!
+                2 fl-on !
+                fl-arrange
+            then
+            s" < " emit-st 2 m-popn 1 m-push-res
+            stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
+            false
+        else
+        0 src-at [char] > = if                                  \ >
+            src-next drop
+            src-trivia fl-parse-concat
+            stack-mode? @ if
+                fl-vs @ m-find fl-vsz @ 1 fl-o!
+                2r> swap m-find swap 0 fl-o!
+                2 fl-on !
+                fl-arrange
+            then
+            s" > " emit-st 2 m-popn 1 m-push-res
+            stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
+            false
+        else
+        0 src-at [char] ~ = if                                  \ ~=
+            src-next drop src-next drop
+            src-trivia fl-parse-concat
+            stack-mode? @ if
+                fl-vs @ m-find fl-vsz @ 1 fl-o!
+                2r> swap m-find swap 0 fl-o!
+                2 fl-on !
+                fl-arrange
+            then
+            s" <> " emit-st 2 m-popn 1 m-push-res
+            stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
+            false
+        else
+        0 src-at [char] = = 1 src-at [char] = = and if          \ ==
+            src-next drop src-next drop
+            src-trivia fl-parse-concat
+            stack-mode? @ if
+                fl-vs @ m-find fl-vsz @ 1 fl-o!
+                2r> swap m-find swap 0 fl-o!
+                2 fl-on !
+                fl-arrange
+            then
+            s" = " emit-st 2 m-popn 1 m-push-res
+            stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
+            false
+        else true then then then then then then
+    until
+    stack-mode? @ if 2r> 2drop then ;
+
+' fl-parse-relational is fl-parse-expr        \ связка defer (только на верхнем уровне)
+
 
 \ ============================== определение функции ==============================
+
+\ ============================== парсер тела функции (if/return/end) ==============================
+\ Тело: return expr | if c then return X [elseif ...] [else ...] end (вариант A,
+\ else опционален). Условие — целое (0 = ложь, ≠0 = истина).
+\ return в ветке генерирует exit + nip-очистку; верхнеуровневый return — без exit.
+
+variable kw-a   variable kw-u   \ текущий keyword-токен тела
+
+\ пропустить ключевое слово 'return' (курсор встаёт за него)
+: fl-skip-return ( -- )
+    src-trivia
+    src-ident kw-u ! kw-a !
+    kw-a @ kw-u @ s" return" compare 0<> if fl-syntax-error then ;
+
+: fl-parse-return-stmt ( -- )      \ курсор после 'return' (в ветке if — с exit)
+    fl-parse-expr
+    stack-mode? @ if
+        fl-vs @ m-find fl-vsz @ 0 fl-o!
+        1 fl-on !
+        fl-arrange
+        \ return в ветке if оставляет ровно 1 значение: убрать всё под
+        \ результатом (параметры). Модель НЕ трогаем — она хранит
+        \ [params, result] для m-pop в elseif/else.
+        m-len @ 1- 0 ?do s" nip " emit-st loop
+    then
+    s" exit " emit-st emit-nl ;
+
+: fl-parse-return-top ( -- )      \ верхнеуровневый return (без exit — ; завершает слово)
+    fl-parse-expr
+    stack-mode? @ if
+        fl-vs @ m-find fl-vsz @ 0 fl-o!
+        1 fl-on !
+        fl-arrange
+    then
+    emit-nl ;
+
+: fl-parse-if-stmt ( -- )          \ курсор после 'if'
+    fl-parse-expr                  \ условие (целое выражение)
+    stack-mode? @ if
+        fl-vs @ m-find fl-vsz @ 0 fl-o!
+        1 fl-on !
+        fl-arrange
+    then
+    s" if " emit-st emit-nl
+    stack-mode? @ if m-pop then    \ условие съедается run-time if
+    1 fl-if-n !
+    src-trivia
+    src-ident kw-u ! kw-a !        \ сохранить токен
+    kw-a @ kw-u @ s" then" compare 0<> if fl-syntax-error then   \ проверить 'then'
+    fl-skip-return
+    fl-parse-return-stmt           \ then-ветка (return всегда выход)
+    \ цикл: elseif / else / end
+    begin
+        src-trivia
+        src-ident kw-u ! kw-a !
+        kw-a @ kw-u @ s" elseif" compare 0= if
+            stack-mode? @ if m-pop then   \ результат then-ветки израсходован if'ом
+            1 fl-if-n +!
+            s" else " emit-st emit-nl
+            fl-parse-expr             \ условие elseif
+            stack-mode? @ if
+                fl-vs @ m-find fl-vsz @ 0 fl-o!
+                1 fl-on !
+                fl-arrange
+            then
+            s" if " emit-st emit-nl
+            stack-mode? @ if m-pop then   \ условие elseif съедается if'ом
+            src-trivia
+            src-ident kw-u ! kw-a !
+            kw-a @ kw-u @ s" then" compare 0<> if fl-syntax-error then
+            fl-skip-return
+            fl-parse-return-stmt
+            false                     \ продолжить цикл (until выйдет при true)
+        else
+            kw-a @ kw-u @ s" else" compare 0= if
+                stack-mode? @ if m-pop then
+                s" else " emit-st emit-nl
+                fl-skip-return
+                fl-parse-return-stmt
+                src-trivia
+                src-ident kw-u ! kw-a !
+                kw-a @ kw-u @ s" end" compare 0<> if fl-syntax-error then   \ прочитать end if-блока
+                true
+            else
+                kw-a @ kw-u @ s" end" compare 0= if
+                    true              \ выйти из цикла
+                else
+                    fl-syntax-error
+                then
+            then
+        then
+    until
+    fl-if-n @ 0 ?do s" then " emit-st loop
+    emit-nl ;
+
+: fl-parse-body-stmts ( -- )       \ парсит stmt'ы до 'end'
+    begin
+        src-trivia
+        src-ident kw-u ! kw-a !
+        kw-a @ kw-u @ s" end" compare 0= if exit then   \ end функции
+        kw-a @ kw-u @ s" if" compare 0= if
+            fl-parse-if-stmt
+        else
+            kw-a @ kw-u @ s" return" compare 0= if
+                fl-parse-return-top
+            else
+                fl-syntax-error
+            then
+        then
+    again ;
 
 variable fl-fname-a
 variable fl-fname-u
@@ -714,19 +923,8 @@ variable fl-param-count
         s" { " emit-st fl-emit-names s" }" emit-st
     then
     emit-nl
-    \ тело: return expr
-    src-trivia
-    src-ident 2dup s" return" compare 0<> if 2drop fl-syntax-error then 2drop
-    fl-parse-expr
-    stack-mode? @ if                     \ результат должен оказаться на вершине
-        fl-vs @ m-find fl-vsz @ 1 fl-o!
-        1 fl-on !
-        fl-arrange
-    then
-    emit-nl
-    \ конец: end
-    src-trivia
-    src-ident 2dup s" end" compare 0<> if 2drop fl-syntax-error then 2drop
+    \ тело: stmt'* end  (stmt := if ... | return expr)
+    fl-parse-body-stmts
     s" ;" emit-st emit-nl
     stack-mode? @ if
         m-len @ 1 < if

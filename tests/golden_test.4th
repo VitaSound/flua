@@ -84,6 +84,8 @@ s" comments"   golden-one
 s" calls"      golden-one
 s" concat"     golden-one
 s" reorder"    golden-one
+s" if_else"    golden-one
+s" elseif"     golden-one
 
 cr
 ." ---------- stack-режим ----------" cr
@@ -95,6 +97,8 @@ s" comments"   golden-stack-one
 s" calls"      golden-stack-one
 s" concat"     golden-stack-one
 s" reorder"    golden-stack-one
+s" if_else"    golden-stack-one
+s" elseif"     golden-stack-one
 
 cr
 #ERRORS @ 0= [IF]

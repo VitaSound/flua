@@ -11,6 +11,11 @@ Transpiles a simple Lua subset to Gforth-compatible Forth source.
 - **Binary operators**: `+ - * /` (целочисленные)
 - **String concatenation**: `..` (транспилируется в `s+`)
 - **Unary minus**: `-expr` → `negate`
+- **Сравнения**: `== ~= < > <= >=` → `= <> < > <= >=` (результат —
+  целое 0/1; для `if`: 0 = ложь, ≠0 = истина)
+- **Ветвление**: `if <условие> then return … [elseif <условие> then
+  return …] [else return …] end` — оператор тела; каждая ветка содержит
+  `return`; `elseif`/`else` опциональны; условие — целое выражение
 - **Вызовы слов**: `name(a, b)` и ссылки на параметры `name`
 - **Комментарии**: `--` до конца строки. Комментарий (или серия подряд
   идущих `--` строк), стоящий непосредственно перед строкой `function`,
@@ -36,6 +41,28 @@ a b +
 
 Операторы расставляются по приоритету (`a + b * c` → `a b c * +`),
 скобки группируются, `0x10` → `$10`, `-x` → `x negate`.
+
+`if` транспилируется в Forth `if/else/then`, каждая ветка завершается
+`exit`:
+
+```lua
+function abs(n)
+  if n < 0 then return -n
+  else return n
+  end
+end
+```
+
+```forth
+\ ( n -- r )
+: abs { n }
+n 0 < if 
+n negate exit 
+else 
+n exit 
+then 
+;
+```
 
 ## Installation
 

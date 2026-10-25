@@ -160,6 +160,52 @@ T{ s\" function add(a,b) return a+b end" run-stack 2 3 add -> 5 }T
 T{ s\" function neg(v) return -v end" run-stack 7 neg -> -7 }T
 T{ s\" function rb(a,b) return b + a end" run-stack 2 3 rb -> 5 }T
 
+\ ---------- if / сравнения ----------
+T{ s\" function f(a,b) if a then return b else return a end end" s\" if " has-output? -> true }T
+T{ s\" function f(a,b) if a then return b else return a end end" s\" exit" has-output? -> true }T
+T{ s\" function f(a,b) if a then return b else return a end end" s\" then" has-output? -> true }T
+T{ s\" function f() return 1 < 2 end" s\" < " has-output? -> true }T
+T{ s\" function f() return 1 <= 2 end" s\" <= " has-output? -> true }T
+T{ s\" function f() return 1 >= 2 end" s\" >= " has-output? -> true }T
+T{ s\" function f() return 1 ~= 2 end" s\" <> " has-output? -> true }T
+T{ s\" function f() return 1 == 2 end" s\" = " has-output? -> true }T
+
+\ выполнение if-оператора (locals): n<0 → n*-1, иначе n
+T{ s\" function abs(n) if n < 0 then return n * -1 else return n end end"
+   run-generated -3 abs -> 3 }T
+T{ s\" function abs(n) if n < 0 then return n * -1 else return n end end"
+   run-generated 5 abs -> 5 }T
+
+\ истинное сравнение → then-ветка, ложное → else-ветка
+T{ s\" function t() if 1 < 2 then return 11 else return 22 end end"
+   run-generated t -> 11 }T
+T{ s\" function t() if 1 > 2 then return 11 else return 22 end end"
+   run-generated t -> 22 }T
+
+\ elseif-цепочка (locals)
+T{ s\" function s3(n) if n > 0 then return 1 elseif n < 0 then return -1 else return 0 end end"
+   run-generated 5 s3 -> 1 }T
+T{ s\" function s3(n) if n > 0 then return 1 elseif n < 0 then return -1 else return 0 end end"
+   run-generated -5 s3 -> -1 }T
+T{ s\" function s3(n) if n > 0 then return 1 elseif n < 0 then return -1 else return 0 end end"
+   run-generated 0 s3 -> 0 }T
+
+\ выполнение if в режиме --stack
+T{ s\" function abs(n) if n < 0 then return n * -1 else return n end end"
+   run-stack -4 abs -> 4 }T
+T{ s\" function abs(n) if n < 0 then return n * -1 else return n end end"
+   run-stack 7 abs -> 7 }T
+T{ s\" function t() if 1 > 2 then return 11 else return 22 end end"
+   run-stack t -> 22 }T
+
+\ elseif в режиме --stack
+T{ s\" function s3(n) if n > 0 then return 1 elseif n < 0 then return -1 else return 0 end end"
+   run-stack -5 s3 -> -1 }T
+
+\ if без else (опционален): при истинном условии → then-ветка
+T{ s\" function t() if 1 < 2 then return 42 end end"
+   run-generated t -> 42 }T
+
 \ ограничения --stack: неиспользуемый параметр и конкатенация с целым
 T{ s\" function u(a) return 7 end" expect-stack-error -> true }T
 T{ s\" function cat(a) return a .. \"!\" end" expect-stack-error -> true }T
@@ -167,6 +213,10 @@ T{ s\" function cat(a) return a .. \"!\" end" expect-stack-error -> true }T
 \ ---------- ошибки парсинга ----------
 T{ s\" naf return x end" expect-error -> true }T
 T{ s\" function broken( return end" expect-error -> true }T
+\ if без then / if без end / return вне ветки if
+T{ s\" function f() if 1 return 2 end" expect-error -> true }T
+T{ s\" function f() if 1 then return 2" expect-error -> true }T
+T{ s\" function f() if 1 then 2 end end" expect-error -> true }T
 
 \ ---------- CLI: файл не найден ----------
 \ flua.src при заданном FLUA_ARG с несуществующим файлом:
