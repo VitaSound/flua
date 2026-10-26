@@ -210,6 +210,15 @@ T{ s\" function t() if 1 < 2 then return 42 end end"
 T{ s\" function u(a) return 7 end" expect-stack-error -> true }T
 T{ s\" function cat(a) return a .. \"!\" end" expect-stack-error -> true }T
 
+\ ---------- лексер: одиночный оператор ----------
+\ ( lua-a lua-u i -- type len ) токенизировать источник и взять type/len
+\ токена № i (позиция в исходнике не нужна)
+: tok-of ( lua-a lua-u i -- type len )
+    >r src-set fl-tokenize r> tok-at >r drop r> ;
+\ tok-op1 не проверяет символы: одиночный "%" — TK-OP длиной 1,
+\ соседние токены не слипаются с ним
+T{ s\" function m(a,b) return a % b end" 9 tok-of -> TK-OP 1 }T
+
 \ ---------- ошибки парсинга ----------
 T{ s\" naf return x end" expect-error -> true }T
 T{ s\" function broken( return end" expect-error -> true }T
