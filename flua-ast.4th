@@ -215,7 +215,7 @@ ulist-new an-root !
     m ;
 
 \ ================= парсер =================
-\ Приоритет (снизу вверх): .. < + - < * / < унарный - < primary
+\ Приоритет (снизу вверх): .. < + - < * / % < унарный - < primary
 
 defer fl-p-expr                          \ верхний уровень выражения
 defer fl-p-unary                         \ рекурсивное слово
@@ -272,12 +272,12 @@ defer fl-p-unary                         \ рекурсивное слово
 
 ' fl-p-unary-1 is fl-p-unary
 
-\ уровень * /: ( op l r ) собирается через r-stack — общего состояния
+\ уровень * / %: ( op l r ) собирается через r-stack — общего состояния
 \ нет, вложенные вызовы (аргументы) не затирают оператор
 : fl-p-term ( -- m )
     fl-p-unary
     begin
-        tok-opc dup [char] * = over [char] / = or if
+        tok-opc dup [char] * = over [char] / = or over [char] % = or if
             \ ( l c )
             tok-next fl-p-unary            \ ( l c r )
             >r swap r>                    \ ( c l r )

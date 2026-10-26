@@ -86,6 +86,7 @@ s" concat"     golden-one
 s" reorder"    golden-one
 s" if_else"    golden-one
 s" elseif"     golden-one
+s" modulo"     golden-one
 
 cr
 ." ---------- stack-режим ----------" cr
@@ -99,6 +100,7 @@ s" concat"     golden-stack-one
 s" reorder"    golden-stack-one
 s" if_else"    golden-stack-one
 s" elseif"     golden-stack-one
+s" modulo"     golden-stack-one
 
 cr
 #ERRORS @ 0= [IF]

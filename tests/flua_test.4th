@@ -210,6 +210,37 @@ T{ s\" function t() if 1 < 2 then return 42 end end"
 T{ s\" function u(a) return 7 end" expect-stack-error -> true }T
 T{ s\" function cat(a) return a .. \"!\" end" expect-stack-error -> true }T
 
+\ ---------- остаток от деления: % → mod ----------
+\ точный вывод (locals)
+T{ s\" function modulo(a,b) return a % b end"
+   s\" \\ ( a b -- r )
+: modulo { a b }
+a b mod 
+;
+"
+   transpiles? -> true }T
+\ приоритет: % на уровне * /, левоассоциативно: a * b % c + a
+T{ s\" function mixed(a,b,c) return a * b % c + a end"
+   s\" \\ ( a b c -- r )
+: mixed { a b c }
+a b * c mod a + 
+;
+"
+   transpiles? -> true }T
+\ выполняется: остаток со знаком делителя (как в Lua): 5%3=2, -5%3=1
+T{ s\" function modulo(a,b) return a % b end" run-generated 5 3 modulo -> 2 }T
+T{ s\" function modulo(a,b) return a % b end" run-generated -5 3 modulo -> 1 }T
+\ режим --stack: точный вывод и выполнение
+T{ s\" function modulo(a,b) return a % b end"
+   s\" \\ ( a b -- r )
+: modulo 
+mod 
+;
+"
+   transpiles-stack? -> true }T
+T{ s\" function modulo(a,b) return a % b end" run-stack -5 3 modulo -> 1 }T
+T{ s\" function mixed(a,b,c) return a * b % c + a end" run-stack 2 3 4 mixed -> 4 }T
+
 \ ---------- лексер: одиночный оператор ----------
 \ ( lua-a lua-u i -- type len ) токенизировать источник и взять type/len
 \ токена № i (позиция в исходнике не нужна)

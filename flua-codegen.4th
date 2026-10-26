@@ -19,13 +19,15 @@ require ./flua-ast.4th
 [IFDEF] fl-gen-fn [ELSE]
 
 \ ---- оператор → постфиксная строка ("+ ", "s+ ", "<= " ...) ----
-\ одиночные ASCII-операторы — символ + пробел; сравнения — готовые слова
+\ одиночные ASCII-операторы — символ + пробел (кроме % → mod);
+\ сравнения — готовые слова
 : fl-op-emit ( op -- )
     dup OP-CONCAT = if drop s" s+ " emit-st exit then
     dup OP-EQ    = if drop s" = "  emit-st exit then
     dup OP-NE    = if drop s" <> " emit-st exit then
     dup OP-LE    = if drop s" <= " emit-st exit then
     dup OP-GE    = if drop s" >= " emit-st exit then
+    dup [char] % = if drop s" mod " emit-st exit then
     emit-ch emit-bl ;
 
 \ ---- выражение: узел → постфиксный эмит ----
