@@ -30,13 +30,17 @@ variable tok-i                          \ курсор чтения (парсе�
 
 : tok-rec ( i -- addr ) tok-cells cells * tok-buf + ;
 
-\ type pos len --     записать токен в конец
+\ type pos len --     записать токен в конец (позиция — для ошибки
+\ переполнения буфера токенов)
 : tok-push ( type pos len -- )
-    tok-n @ tok-max >= abort" flua: token buffer overflow"
-    tok-n @ tok-rec >r
-    r@ 2 cells + !                      \ len (верхушка стека)
-    r@ cell+ !                          \ pos
-    r> !                                \ type
+    { type pos len }
+    tok-n @ tok-max >= if
+        s" flua: token buffer overflow" pos fl-err-at
+    then
+    tok-n @ tok-rec                     \ ( addr )
+    len over 2 cells + !
+    pos over cell+ !
+    type swap !
     1 tok-n +! ;
 
 \ i -- type pos len
@@ -56,18 +60,21 @@ variable tok-i                          \ курсор чтения (парсе�
 \ ------------------- сканеры токенов -------------------
 
 \ курсор на открывающей кавычке: пропустить строку до закрывающей
-\ (эскейп \x съедает два символа); курсор — за закрывающей
-: tok-skip-string ( -- )
+\ (эскейп \x съедает два символа); курсор — за закрывающей.
+\ open-pos — позиция открывающей кавычки: на неё указывает ошибка,
+\ если строка не закрыта до конца файла
+: tok-skip-string ( open-pos -- )
+    { open }
     src-next strq !
     begin
-        src-eof? abort" flua: unterminated string"
+        src-eof? if s" flua: unterminated string" open fl-err-at then
         src-next
         dup strq @ = if drop exit then
         [char] \ = if src-next drop then
     again ;
 
 : tok-string ( -- )                    \ курсор на открывающей кавычке
-    src-pos @ >r tok-skip-string TK-STR r> tok-span ;
+    src-pos @ dup tok-skip-string TK-STR swap tok-span ;
 
 : tok-comment ( -- )                   \ курсор на «--»
     src-next drop src-next drop         \ съесть «--»: pos = начало текста

@@ -291,9 +291,13 @@ variable fl-err-i
     s"  (offset " fl-err+ off fl-err-num s" )" fl-err+
     fl-err-buf fl-err-i @ ;
 
-: fl-syntax-error ( off -- )          \ сообщение + throw (-1)
-    ." flua: syntax error at " fl-syntax-msg type cr
-    -1 throw ;
+\ ( a u off -- ) «<сообщение> at L:C (offset N)» + throw (-1)
+: fl-err-at ( a u off -- )
+    { off }
+    type ."  at " off fl-syntax-msg type cr -1 throw ;
+
+: fl-syntax-error ( off -- )          \ то же для синтаксической ошибки
+    s" flua: syntax error" rot fl-err-at ;
 
 \ ============================== идентификатор (токенизатор) ==============================
 

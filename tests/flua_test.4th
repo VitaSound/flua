@@ -270,6 +270,17 @@ T{ s\" function f() if 1 return 2 end" expect-error -> true }T
 T{ s\" function f() if 1 then return 2" expect-error -> true }T
 T{ s\" function f() if 1 then 2 end end" expect-error -> true }T
 
+\ ---------- ошибки токенизатора (с позицией) ----------
+\ незакрытая строка: позиция — открывающая кавычка
+T{ s\" function f() return \"abc end" expect-error -> true }T
+\ переполнение буфера токенов: 4100 токенов «x» > tok-max (4096)
+create many-src 9000 allot
+: fill-many ( -- )                       \ «x x x …» — 8200 байт
+    many-src 8200 0 ?do
+        dup i + i 2 mod 0= if [char] x else bl then swap c!
+    loop drop ;
+T{ fill-many many-src 8200 expect-error -> true }T
+
 \ ---------- CLI: файл не найден ----------
 \ flua.src при заданном FLUA_ARG с несуществующим файлом:
 \ file-status → сообщение + тихий -1 throw (без трассы gforth)
