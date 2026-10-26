@@ -7,6 +7,7 @@
 \   целые (десятичные, 0x hex), унарный минус
 \   строки "..." и '...' (эскейпы \n \t \\ \" \')
 \   бинарные + - * / % (остаток → mod), конкатенация ..  → s+
+\   логика: not → 0=, and/or — шорт-кircuit (флаг 0/−1, как сравнения)
 \   вызовы слов name(a, b) и ссылки на параметры name
 
 s" 0.1.0" 2constant flua-version
@@ -427,7 +428,7 @@ require ./flua-codegen.4th
     ."   flua help          эта справка" cr
     ."   flua version       версия" cr cr
     ." Подмножество Lua: function name(a, b) return expr end," cr
-    ." целые (0x hex), строки, + - * / %, .. (s+), вызовы слов." cr ;
+    ." целые (0x hex), строки, + - * / %, not and or, .. (s+), вызовы слов." cr ;
 
 : flua.version ( -- ) ." flua v" flua-version type cr ;
 

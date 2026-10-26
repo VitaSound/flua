@@ -250,6 +250,74 @@ T{ s\" function mixed(a,b,c) return a * b % c + a end" run-stack 2 3 4 mixed -> 
 \ соседние токены не слипаются с ним
 T{ s\" function m(a,b) return a % b end" 9 tok-of -> TK-OP 1 }T
 
+\ ---------- логические операторы: not, and, or ----------
+\ not → 0= : флаг gforth −1 (истина) / 0 (ложь), как у сравнений
+T{ s\" function fnot(a) return not a end"
+   s\" \\ ( a -- r )
+: fnot { a }
+a 0= 
+;
+"
+   transpiles? -> true }T
+\ and: правый операнд эмитится только внутри ветки (шорт-кircuit)
+T{ s\" function fband(a,b) return a and b end"
+   s\" \\ ( a b -- r )
+: fband { a b }
+a dup if drop b then 
+;
+"
+   transpiles? -> true }T
+\ or: левый решает исход — правый не выполняется
+T{ s\" function fbor(a,b) return a or b end"
+   s\" \\ ( a b -- r )
+: fbor { a b }
+a dup if else drop b then 
+;
+"
+   transpiles? -> true }T
+\ режим --stack: та же эмиссия с выравниванием операндов
+T{ s\" function fband(a,b) return a and b end"
+   s\" \\ ( a b -- r )
+: fband 
+swap dup if drop then 
+;
+"
+   transpiles-stack? -> true }T
+T{ s\" function fnot(a) return not a end"
+   s\" \\ ( a -- r )
+: fnot 
+0= 
+;
+"
+   transpiles-stack? -> true }T
+\ семантика (locals): and → b при a≠0, or → a при a≠0
+T{ s\" function fband(a,b) return a and b end" run-generated 10 3 fband -> 3 }T
+T{ s\" function fband(a,b) return a and b end" run-generated 0 3 fband -> 0 }T
+T{ s\" function fbor(a,b) return a or b end" run-generated 7 0 fbor -> 7 }T
+T{ s\" function fbor(a,b) return a or b end" run-generated 0 5 fbor -> 5 }T
+\ флаг not: 0 → −1, 5 → 0
+T{ s\" function fnot(a) return not a end" run-generated 0 fnot -> -1 }T
+T{ s\" function fnot(a) return not a end" run-generated 5 fnot -> 0 }T
+\ приоритет: and ближе к выражению, чем or — a and b or c = (a and b) or c
+T{ s\" function fchain(a,b,c) return a and b or c end" run-generated 1 2 3 fchain -> 2 }T
+T{ s\" function fchain(a,b,c) return a and b or c end" run-generated 0 0 5 fchain -> 5 }T
+\ not + or в одном выражении: not a or a
+T{ s\" function fneg(a) return not a or a end" run-generated 0 fneg -> -1 }T
+T{ s\" function fneg(a) return not a or a end" run-generated 5 fneg -> 5 }T
+\ та же семантика в --stack
+T{ s\" function fband(a,b) return a and b end" run-stack 10 3 fband -> 3 }T
+T{ s\" function fchain(a,b,c) return a and b or c end" run-stack 0 0 5 fchain -> 5 }T
+T{ s\" function fnot(a) return not a end" run-stack 0 fnot -> -1 }T
+\ шорт-кircuit на выполнении: fprobe бросает исключение, если вызван —
+\ a=0 возвращает 0 молча (правый операнд не выполнялся),
+\ a=5 доходит до fprobe (выполнялся) — ловим throw через catch
+: fprobe ( n -- n ) abort" PROBE CALLED " ;
+T{ s\" function fsc(a) return a and fprobe(7) end" run-generated 0 fsc -> 0 }T
+\ вызов с a≠0 внутри слова (catch только в колонном определении):
+\ fprobe выполнится и бросит — catch возвращает код ≠ 0
+: fsc5 ( -- n ) 5 fsc ;
+T{ ['] fsc5 catch 0<> -> true }T
+
 \ ---------- позиция ошибки: строка/столбец ----------
 \ src-line-col: байт → (line col); границы строк — одиночный \n (10)
 T{ s\" line one

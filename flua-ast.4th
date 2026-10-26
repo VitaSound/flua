@@ -4,6 +4,7 @@
 \   an-type — ANT-NUM | ANT-STR | ANT-ID | ANT-BIN | ANT-UN | ANT-CALL | ANT-FN
 \   an-pa / an-pu — позиция и длина текста узла в исходнике (src)
 \   an-op — ANT-BIN: ASCII-код оператора; OP-CONCAT (256) — «..»
+\           ANT-UN: [char] - или OP-NOT (261)
 \   an-l   — ANT-BIN: левый операнд; ANT-UN: операнд; ANT-FN: тело
 \   an-r   — ANT-BIN: правый операнд
 \   an-aux — ANT-CALL: аргументы, ANT-FN: параметры (ulist узлов); 0 иначе
@@ -42,6 +43,10 @@ require ./flua-tokens.4th
 258 constant OP-GE                       \ «>=»
 259 constant OP-EQ                       \ «==» (печать «=»)
 260 constant OP-NE                       \ «~=" (печать «<>»)
+
+261 constant OP-NOT                      \ «not» — унарный (антипод '-')
+262 constant OP-AND                      \ «and» — бинарный, шорт-кircuit
+263 constant OP-OR                       \ «or» — бинарный, шорт-кircuit
 
 \ смещения полей узла (в ячейках) и размер записи
 0 constant an-type
@@ -176,9 +181,10 @@ ulist-new an-root !
     r m an-r an!
     m ;
 
-: an-un ( x -- m )
-    { x }
+: an-un ( op x -- m )                    \ унарный: '-' или OP-NOT
+    { op x }
     ANT-UN an-node { m }
+    op m an-op an!
     x m an-l an!
     m ;
 
@@ -215,7 +221,8 @@ ulist-new an-root !
     m ;
 
 \ ================= парсер =================
-\ Приоритет (снизу вверх): .. < + - < * / % < унарный - < primary
+\ Приоритет (снизу вверх): or < and < сравнения < .. < + - < * / %
+\                          < унарный (- not) < primary
 
 defer fl-p-expr                          \ верхний уровень выражения
 defer fl-p-unary                         \ рекурсивное слово
@@ -264,10 +271,13 @@ defer fl-p-unary                         \ рекурсивное слово
 
 : fl-p-unary-1 ( -- m )
     [char] - tok-op? if
-        tok-next fl-p-unary
-        an-un
+        [char] - tok-next fl-p-unary an-un
     else
-        fl-p-primary
+        s" not" tok-kw? if
+            OP-NOT tok-next fl-p-unary an-un
+        else
+            fl-p-primary
+        then
     then ;
 
 ' fl-p-unary-1 is fl-p-unary
@@ -342,7 +352,33 @@ defer fl-p-unary                         \ рекурсивное слово
         then
     until ;
 
-' fl-p-relational is fl-p-expr
+\ уровень «and» (ближе к выражению, чем «or»): ключевое слово, не символ
+: fl-p-and ( -- m )
+    fl-p-relational
+    begin
+        s" and" tok-kw? if
+            OP-AND tok-next fl-p-relational
+            >r swap r> an-bin
+            false
+        else
+            true
+        then
+    until ;
+
+\ уровень «or» — верхний: левоассоциативно, как все уровни ниже
+: fl-p-or ( -- m )
+    fl-p-and
+    begin
+        s" or" tok-kw? if
+            OP-OR tok-next fl-p-and
+            >r swap r> an-bin
+            false
+        else
+            true
+        then
+    until ;
+
+' fl-p-or is fl-p-expr
 
 \ ---------------- если ----------------
 
@@ -485,14 +521,14 @@ defer an-print                           \ рекурсия; тело — an-pri
     loop ;
 
 : an-op-emit ( op -- )
-    dup OP-CONCAT = if drop s" .." emit-st
-    else
-        dup OP-LE = if drop s" <=" emit-st
-        else dup OP-GE = if drop s" >=" emit-st
-        else dup OP-EQ = if drop s" =" emit-st
-        else dup OP-NE = if drop s" <>" emit-st
-        else emit-ch then then then then
-    then ;
+    dup OP-CONCAT = if drop s" .." emit-st exit then
+    dup OP-LE    = if drop s" <=" emit-st exit then
+    dup OP-GE    = if drop s" >=" emit-st exit then
+    dup OP-EQ    = if drop s" ="  emit-st exit then
+    dup OP-NE    = if drop s" <>" emit-st exit then
+    dup OP-AND   = if drop s" and" emit-st exit then
+    dup OP-OR    = if drop s" or"  emit-st exit then
+    emit-ch ;
 
 \ одна ветка if (br, i): i = 0 — первая (после «if»), иначе elseif/else
 : an-branch-print ( br i -- )
@@ -542,7 +578,9 @@ defer an-print                           \ рекурсия; тело — an-pri
             -1 an-d +!
         endof
         ANT-UN of
-            s" un -" emit-st emit-nl
+            s" un " emit-st
+            m an-op an@ [char] - = if s" -" else s" not" then emit-st
+            emit-nl
             1 an-d +!
             m an-l an@ an-print
             -1 an-d +!

@@ -154,6 +154,19 @@ fn two(x)
 \ пустой исходник → пустой вывод
 T{ s\" " s\" " ast? -> true }T
 
+\ ---------- логические операторы ----------
+\ приоритет: or над and над сравнениями; not — унарный уровень
+T{ s\" function flogic(a,b,c) return a and b or not c end"
+   s\" fn flogic(a, b, c)
+  bin or
+    bin and
+      id a
+      id b
+    un not
+      id c
+"
+   ast? -> true }T
+
 \ ---------- ошибки ----------
 T{ s\" function broken(a return a end" ast-error? -> true }T
 T{ s\" x = 1" ast-error? -> true }T

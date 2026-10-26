@@ -82,8 +82,43 @@ defer fl-eval                          \ рекурсивное слово; те
         m an-text emit-st emit-bl
     then ;
 
+\ and/or со шорт-кircuit: правый операнд эмитится только внутри ветки —
+\ он не должен выполняться, когда левый решает исход (Lua-семантика).
+\ Формы: and (locals) — «A dup if drop B then»; and (--stack) —
+\ «A dup if drop B else nip then»: в skip-пути (a=0) под a лежит слот
+\ правого операнда — nip убирает его, и обе ветки стыкуются одной
+\ ячейкой (иначе лишняя подложка на then-стыке); or — одна форма для
+\ обоих режимов: «A dup if else drop B then».
+\ Модель (--stack): A выравнивается наверх, «dup if drop» съедает его
+\ значение → m-pop (как «if» в fl-gen-if); B строится на пустом верхе
+\ в then-ветке; после «then» модель = результат B (без лишних push)
+: fl-eval-bool ( m -- )
+    { m }
+    m an-l an@ fl-eval
+    stack-mode? @ if
+        fl-vs @ m-find fl-vsz @ 0 fl-o!
+        1 fl-on !
+        fl-arrange
+    then
+    m an-op an@ OP-AND = if
+        s" dup if drop " emit-st
+        stack-mode? @ if m-pop then
+        m an-r an@ fl-eval
+        stack-mode? @ if s" else nip " emit-st then
+        s" then " emit-st
+    else
+        s" dup if else drop " emit-st
+        stack-mode? @ if m-pop then
+        m an-r an@ fl-eval
+        s" then " emit-st
+    then ;
+
 : fl-eval-bin ( m -- )
     { m }
+    m an-op an@ dup OP-AND = over OP-OR = or if
+        drop m fl-eval-bool exit              \ шорт-кircuit — своя эмиссия
+    then
+    drop                                      \ не and/or: op больше не нужен
     m an-l an@ fl-eval
     stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
     m an-r an@ fl-eval
@@ -109,7 +144,7 @@ defer fl-eval                          \ рекурсивное слово; те
         1 fl-on !
         fl-arrange
     then
-    s" negate " emit-st
+    m an-op an@ [char] - = if s" negate " else s" 0= " then emit-st
     m-pop 1 m-push-res ;
 
 \ вызов: аргументы → буфер уровня → выравнивание → имя в постфиксной позиции

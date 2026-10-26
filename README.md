@@ -12,8 +12,12 @@ Transpiles a simple Lua subset to Gforth-compatible Forth source.
   со знаком делителя, как в Lua)
 - **String concatenation**: `..` (транспилируется в `s+`)
 - **Unary minus**: `-expr` → `negate`
+- **Логические операторы**: `not` → `0=`; `and` / `or` — шорт-кircuit
+  (правый операнд не вычисляется, когда левый решает исход); результат —
+  флаг gforth: 0 = ложь, −1 = истина (в `if` принимается любой ≠0);
+  операнды — целые
 - **Сравнения**: `== ~= < > <= >=` → `= <> < > <= >=` (результат —
-  целое 0/1; для `if`: 0 = ложь, ≠0 = истина)
+  флаг gforth: 0 = ложь, −1 = истина; для `if` принимается любой ≠0)
 - **Ветвление**: `if <условие> then return … [elseif <условие> then
   return …] [else return …] end` — оператор тела; каждая ветка содержит
   `return`; `elseif`/`else` опциональны; условие — целое выражение
@@ -225,7 +229,7 @@ fn add(a, b)
 | Слой | Слова |
 |------|-------|
 | Токенизатор | `flua-tokens.4th`: `fl-tokenize` → массив токенов TK-ID/NUM/STR/OP/CM/EOF; `src-set` `src-at` `src-peek` `src-next` — побайтовый курсор, `src-skip-ws`/`src-comment?` — пробелы и `--`-комментарии |
-| Парсер (AST) | `flua-ast.4th`, рекурсивный спуск: `fl-p-relational(сравнения)` → `fl-p-concat(..)` → `fl-p-additive(+-)` → `fl-p-term(*/%)` → `fl-p-unary(-)` → `fl-p-primary`; дерево — узлы-записи `an-node`, реестр `an-nodes`/`an-reset` |
+| Парсер (AST) | `flua-ast.4th`, рекурсивный спуск: `fl-p-or(или)` → `fl-p-and(и)` → `fl-p-relational(сравнения)` → `fl-p-concat(..)` → `fl-p-additive(+-)` → `fl-p-term(*/%)` → `fl-p-unary(- not)` → `fl-p-primary`; дерево — узлы-записи `an-node`, реестр `an-nodes`/`an-reset` |
 | Кодоген | `flua-codegen.4th`: `fl-codegen` — обход дерева, `emit-ch`/`emit-st` — постфиксная запись в выходной буфер; `fl-op-emit` — оператор → Forth-слово; шапки-комментарии через `cm-buf` |
 | Стековая модель (`--stack`) | `m-model/m-len/m-tag` — слоты и уникальные тэги значений; `fl-stack-leaf` — первое использование: `dup`/`over`/`d pick`, последнее: подъём отложен; `fl-arrange`/`fl-ocheck`/`fl-oroll-op` — выравнивание блока операндов (см. «Режим --stack»); `m-find`/`m-move-to-top`/`m-popn` (guard), `fl-count-tree` — подсчёт использований по дереву |
 | AST (`--ast`) | печать того же дерева: `flua-ast.4th`, `an-print` (дерево в emit-buf), `fl-ast-run` |
