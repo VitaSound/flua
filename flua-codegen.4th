@@ -6,13 +6,13 @@
 \ раньше: locals — шапка { a b } и постфиксная эмиссия имён; --stack —
 \ стековая модель m-*/fl-arrange (выбор dup/over/pick/roll).
 \
-\ Подсчёт использований параметров (--stack) — обход дерева (fl-count-tree):
-\ замена лексических сканов fl-scan-end/fl-count старого курсорного парсера.
-\ Шапки-комментарии: fl-p-program (flua-ast) кладёт серию комментариев
-\ перед function в cm-buf; cm-flush эмитит её перед шапкой функции.
+\ Подсчёт использований параметров (--stack) — обход дерева (fl-count-tree).
+\ Шапки-комментарии: fl-hdr-cm-fill наполняет cm-buf серией TK-CM-токенов
+\ перед function; cm-flush эмитит её перед шапкой функции.
 \
 \ Подключается из flua.4th после flua-ast.4th: нужны emit-*, src-*, cm-*,
-\ m-*, fl-arrange, fl-stack-leaf, param-*, fl-params-ul, fl-fname-*.
+\ m-*, fl-arrange, fl-stack-leaf, param-*, fl-params-ul, fl-emit-names,
+\ fl-fname-*, переменные кодогена fl-karg/fl-cbase/fl-cn/fl-nna/fl-nnu/fl-if-n.
 
 require ./flua-ast.4th
 
@@ -28,10 +28,10 @@ require ./flua-ast.4th
     dup OP-GE    = if drop s" >= " emit-st exit then
     emit-ch emit-bl ;
 
-\ ---- выражение: узел → постфиксный эмит (как fl-parse-expr раньше) ----
+\ ---- выражение: узел → постфиксный эмит ----
 defer fl-eval                          \ рекурсивное слово; тело — fl-eval-1
 
-\ число: 0x... → $hex, десятичное — как есть (fl-parse-number раньше)
+\ число: 0x... → $hex, десятичное — как есть
 : fl-eval-num ( m -- )
     { m }
     m an-text { a u }
@@ -46,7 +46,7 @@ defer fl-eval                          \ рекурсивное слово; те
     then
     1 m-push-res ;
 
-\ строка: Lua-текст → forth s\" с escape (fl-parse-string раньше)
+\ строка: Lua-текст → forth s\" с escape
 : fl-eval-str ( m -- )
     { m }
     [char] s emit-ch [char] \ emit-ch [char] " emit-ch emit-bl
@@ -71,7 +71,7 @@ defer fl-eval                          \ рекурсивное слово; те
     2 m-push-res ;
 
 \ идентификатор: параметр — подъём/копия (stack) либо просто имя (locals);
-\ не-параметр в --stack — ошибка (fl-stack-leaf раньше та же проверка)
+\ не-параметр в --stack — ошибка (проверка — в fl-stack-leaf)
 : fl-eval-id ( m -- )
     { m }
     stack-mode? @ if
@@ -92,7 +92,7 @@ defer fl-eval                          \ рекурсивное слово; те
         fl-arrange
     then
     m an-op an@ fl-op-emit
-    \ «..»: результат — строка (2 ячейки), съедает 4 (2+2) — как fl-parse-concat
+    \ «..»: результат — строка (2 ячейки), съедает 4 (2+2)
     m an-op an@ OP-CONCAT = if
         4 m-popn 2 m-push-res
     else
@@ -151,7 +151,7 @@ defer fl-eval                          \ рекурсивное слово; те
 
 \ ---- return ----
 \ в ветке if: результат на месте, чистка под ним (nip — только в --stack),
-\ exit — как fl-parse-return-stmt старого конвейера
+\ exit — выход из слова внутри ветки
 : fl-ret-stmt ( m -- )
     fl-eval
     stack-mode? @ if
@@ -221,9 +221,8 @@ defer fl-eval                          \ рекурсивное слово; те
     dup an-type an@ ANT-IF = if fl-gen-if else fl-ret-top then ;
 
 \ ---- подсчёт использований параметров: обход дерева (--stack) ----
-\ Вместо fl-scan-end/fl-count: fl-count-tree считает AN-ID-листы с именем
-\ fl-nna/fl-nnu (имя-вызова живёт в AN-CALL, не в AN-ID — как и раньше
-\ «идентификатор не перед (»). xt для ulist-each параметров — fl-count-one-tree.
+\ fl-count-tree считает AN-ID-листы с именем fl-nna/fl-nnu (имя-вызова
+\ живёт в AN-CALL, не в AN-ID). xt для ulist-each параметров — fl-count-one-tree.
 variable fl-gen-cur                     \ генерируемая функция (корень обхода)
 defer fl-count-tree                     \ рекурсия: узел → счёт по fl-cn
 

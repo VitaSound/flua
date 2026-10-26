@@ -347,7 +347,7 @@ defer fl-p-unary                         \ рекурсивное слово
 \ ---------------- если ----------------
 
 \ ветка после then/elseif/else: «return» expr — в ветке return обязателен
-\ (в основном конвейере — fl-skip-return + fl-parse-return-stmt)
+\ (кодоген: fl-ret-stmt)
 : fl-p-ret ( -- m )
     s" return" tok-kw? 0= if fl-p-error then
     tok-next fl-p-expr ;

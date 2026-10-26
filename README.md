@@ -133,8 +133,8 @@ function add(a, b) return a + b end
 5. **Финал функции**: результат через `fl-arrange` поднимается на
    вершину, итоговая глубина модели должна быть ≥ 1.
 
-Подсчёт «где последнее использование» — лексический скан тела
-(`fl-scan-end` / `fl-count` / `fl-skip-string`), счётчики `count/used`
+Подсчёт «где последнее использование» — обход дерева AST
+(`fl-count-tree` в `flua-codegen.4th`), счётчики `count/used`
 живут в структурах параметров (fenum `ulist`).
 
 ### Зачем вообще подъём
@@ -192,9 +192,9 @@ roll поднимал `a` над `b`, второй возвращал `b` нав
 
 ## Режим `--ast` (вывод AST)
 
-Отдельный конвейер поверх токенов (`flua-tokens.4th` → `flua-ast.4th`):
-парсер строит дерево разбора и печатает его вместо Forth-кода; путь
-компиляции не задействуется, режим `--stack` на вывод не влияет.
+Тот же конвейер токенов и парсера (`flua-tokens.4th` → `flua-ast.4th`):
+дерево разбора печатается вместо Forth-кода; кодоген не задействуется,
+режим `--stack` на вывод не влияет.
 
 ```bash
 flua --ast file.lua    # также: flua ast file.lua, короткий флаг -a
@@ -222,11 +222,11 @@ fn add(a, b)
 
 | Слой | Слова |
 |------|-------|
-| Лексер | `src-set` `src-at` `src-peek` `src-next` — побайтовый курсор; `src-trivia` (пробелы + `--`-комментарии); `src-ident`, `fl-parse-number`, `fl-parse-string` |
-| Парсер | рекурсивный спуск: `fl-parse-concat(..)` → `fl-parse-additive(+-)` → `fl-parse-term(*/)` → `fl-parse-unary(-)` → `fl-parse-primary` |
-| Эмит | `emit-ch`/`emit-st` — постфиксная запись в выходной буфер; `defer fl-parse-expr` связан с `fl-parse-concat` |
-| Стековая модель (`--stack`) | `m-model/m-len/m-tag` — слоты и уникальные тэги значений; `fl-stack-leaf` — первое использование: `dup`/`over`/`d pick`, последнее: подъём отложен; `fl-arrange`/`fl-ocheck`/`fl-oroll-op` — выравнивание блока операндов (см. «Режим --stack»); `m-find`/`m-move-to-top`/`m-popn` (guard), `fl-count`/`fl-scan-end`/`fl-skip-string` — подсчёт использований |
-| AST (`--ast`) | отдельный конвейер в `flua-tokens.4th`/`flua-ast.4th`: `fl-tokenize` → `fl-p-*` (рекурсивный спуск, узлы-записи `an-node`, реестр `an-nodes`/`an-reset`) → `an-print` (дерево в emit-buf); `fl-ast-run` |
+| Токенизатор | `flua-tokens.4th`: `fl-tokenize` → массив токенов TK-ID/NUM/STR/OP/CM/EOF; `src-set` `src-at` `src-peek` `src-next` — побайтовый курсор, `src-skip-ws`/`src-comment?` — пробелы и `--`-комментарии |
+| Парсер (AST) | `flua-ast.4th`, рекурсивный спуск: `fl-p-relational(сравнения)` → `fl-p-concat(..)` → `fl-p-additive(+-)` → `fl-p-term(*/)` → `fl-p-unary(-)` → `fl-p-primary`; дерево — узлы-записи `an-node`, реестр `an-nodes`/`an-reset` |
+| Кодоген | `flua-codegen.4th`: `fl-codegen` — обход дерева, `emit-ch`/`emit-st` — постфиксная запись в выходной буфер; `fl-op-emit` — оператор → Forth-слово; шапки-комментарии через `cm-buf` |
+| Стековая модель (`--stack`) | `m-model/m-len/m-tag` — слоты и уникальные тэги значений; `fl-stack-leaf` — первое использование: `dup`/`over`/`d pick`, последнее: подъём отложен; `fl-arrange`/`fl-ocheck`/`fl-oroll-op` — выравнивание блока операндов (см. «Режим --stack»); `m-find`/`m-move-to-top`/`m-popn` (guard), `fl-count-tree` — подсчёт использований по дереву |
+| AST (`--ast`) | печать того же дерева: `flua-ast.4th`, `an-print` (дерево в emit-buf), `fl-ast-run` |
 | CLI | `bin/flua` → gforth + `flua.4th`; диспетчер по `FLUA_CMD` (`FLUA_ARG` — файл, иначе stdin); режим — `FLUA_MODE=stack` (`--stack`/`-s`); `FLUA_CMD=ast` — вывод AST (`--ast`/`-a`/подкоманда `ast`) |
 
 ## Project structure
@@ -235,9 +235,11 @@ fn add(a, b)
 /home/sea/flua/
 ├── package.4th             — манифест VitaSound (name flua, COPL, deps fmix/flint/fcov/ttester)
 ├── bin/flua                — CLI-лаунчер (конвенция: одна строка PATH на тул)
-├── flua.4th                — основной конвейер: лексер + парсер + CLI
-├── flua-tokens.4th         — токенизатор (фаза 1 конвейера AST)
+├── flua.4th                — инфраструктура: emit-буфер, курсор src, стековая
+│                             модель, выравнивание, параметры, CLI (fl-compile)
+├── flua-tokens.4th         — токенизатор (фаза 1 конвейера)
 ├── flua-ast.4th            — AST: парсер поверх токенов + печать дерева (--ast)
+├── flua-codegen.4th        — кодогенерация: обход дерева → Forth-код
 ├── tests/
 │   ├── flua_test.4th       — юнит-тесты на ttester
 │   ├── golden_test.4th     — golden-тесты (исходник ↔ эталон, байт-в-байт)

@@ -129,9 +129,12 @@ fmix check --stage pre-commit    # тесты + flint (0 дублей в про�
 
 ## Карта проекта
 
-- `flua.4th` — основной конвейер: лексер, парсер, эмит, модель стека, CLI;
+- `flua.4th` — инфраструктура: emit-буфер, курсор src, стековая модель,
+  выравнивание, параметры, шапки-комментарии, CLI (`fl-compile` →
+  `fl-p-program` + `fl-codegen`);
 - `flua-tokens.4th` — токенизатор (фаза 1 AST-конвейера);
 - `flua-ast.4th` — AST: парсер поверх токенов + печать дерева (`flua --ast`);
+- `flua-codegen.4th` — кодогенерация: обход дерева → Forth-код;
 - `bin/flua` — лаунчер (`--stack`/`-s`, `--ast`/`-a`, `help`, `version`);
 - `bin/flua-verify` — проверка файла в обоих режимах;
 - `tests/flua_test.4th` — юнит-тесты (ttester), включая точные

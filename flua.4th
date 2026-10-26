@@ -227,31 +227,17 @@ variable src-pos
 : src-skip-ws ( -- )
     begin src-peek fl-ws? while src-next drop repeat ;
 
-: src-skip-comment ( -- )                 \ курсор на "--": до конца строки
-    src-next drop src-next drop
-    begin
-        src-peek -1 = if exit then
-        src-peek 10 = if exit then
-        src-next drop
-    again ;
-
-: src-trivia ( -- )                       \ пробелы и комментарии, пока есть
-    begin
-        src-skip-ws
-        src-comment? if src-skip-comment false else true then
-    until ;
-
 \ ---------- комментарий перед функцией ----------
 \ Комментарии из Lua не копируются как есть: "--" в Forth — это не
 \ комментарий, а несуществующее слово. Переносим только комментарий,
 \ стоящий непосредственно перед строкой function (включая серию
 \ подряд идущих -- строк между функциями): он становится шапкой
 \ "\ ..." непосредственно перед стек-комментарием. Всё остальное
-\ (внутри тела, в конце файла) отбрасывается в лексере как trivia.
+\ (внутри тела, в конце файла) отбрасывается: токенизатор хранит их как
+\ TK-CM, серию перед function в шапку переносит fl-hdr-cm-fill (codegen).
 
 create cm-buf 4096 allot                 \ выходные строки комментариев
 variable cm-u                            \ сколько занято
-variable cm-cs                            \ вспомогательное: смещение начала текста
 
 : cm-reset ( -- ) 0 cm-u ! ;
 : cm-put ( c -- ) cm-buf cm-u @ + c! 1 cm-u +! ;
@@ -272,36 +258,13 @@ variable cm-cs                            \ вспомогательное: см
     cm-u @ 0= if exit then
     cm-buf cm-u @ emit-st cm-reset ;
 
-\ пропуск "--…<CR>", текст комментария → в буфер
-: src-skip-comment-cm ( -- )
-    src-next drop src-next drop          \ съесть "--"
-    src-pos @ cm-cs !
-    begin
-        src-peek -1 = src-peek 10 = or if
-            true                         \ конец комментария (EOF или LF)
-        else
-            src-next drop false
-        then
-    until
-    src-pos @ cm-cs @ -                  \ текст после "--" до конца строки
-    src-a @ cm-cs @ + swap
-    cm-add ;
-
-\ как src-trivia, но комментарии копируются в буфер (только для
-\ позиции «перед function» — см. fl-compile)
-: src-trivia-cm ( -- )
-    begin
-        src-skip-ws
-        src-comment? if src-skip-comment-cm false else true then
-    until ;
-
 \ ============================== синтаксическая ошибка ==============================
 
 : fl-syntax-error ( -- )
     ." flua: syntax error at offset " src-pos @ . cr
     -1 throw ;
 
-\ ============================== лексеры ==============================
+\ ============================== идентификатор (токенизатор) ==============================
 
 : src-ident ( -- a u )                    \ [A-Za-z_][A-Za-z0-9_]*
     src-eof? if 0 0 exit then
@@ -310,44 +273,7 @@ variable cm-cs                            \ вспомогательное: см
     begin src-peek fl-alnum? while src-next drop repeat
     src-a @ src-pos @ + over - ;
 
-variable strq                             \ закрывающая кавычка текущей строки
-
-: fl-parse-string ( -- )                  \ курсор на открывающей кавычке
-    src-next strq !
-    [char] s emit-ch [char] \ emit-ch [char] " emit-ch emit-bl   \ s"<пробел>
-    begin
-        src-eof? abort" flua: unterminated string"
-        src-next
-        dup strq @ = if                   \ закрывающая кавычка
-            drop [char] " emit-ch emit-bl 2 m-push-res exit
-        then
-        dup [char] \ = if                 \ escape из Lua → escape в s\"
-            drop src-next
-            [char] \ emit-ch
-            dup [char] n = if drop [char] n emit-ch else
-            dup [char] t = if drop [char] t emit-ch else
-            dup [char] \ = if drop [char] \ emit-ch else
-            dup [char] " = if drop [char] " emit-ch else
-            emit-ch
-            then then then then
-        else
-            dup [char] " = if             \ " внутри '...' → \"
-                drop [char] \ emit-ch [char] " emit-ch
-            else emit-ch then
-        then
-    again ;
-
-: fl-parse-number ( -- )
-    0 src-at [char] 0 = if                \ 0x / 0X → $hex в Forth
-        1 src-at [char] x = 1 src-at [char] X = or if
-            [char] $ emit-ch
-            src-next drop src-next drop
-            begin src-peek fl-hexd? while src-next emit-ch repeat
-            emit-bl 1 m-push-res exit
-        then
-    then
-    begin src-peek fl-digit? while src-next emit-ch repeat
-    emit-bl 1 m-push-res ;
+variable strq                             \ закрывающая кавычка строки (flua-tokens)
 
 \ ============================== параметры как структуры (fenum ulist) ==============================
 \ Структура параметра (param%):
@@ -367,88 +293,16 @@ variable fl-params-ul                     \ ulist адресов парамет�
 : param-name ( p -- a u ) dup @ swap cell+ @ ;
 : param-count@ ( p -- n ) 2 cells + @ ;
 : param-used@  ( p -- n ) 3 cells + @ ;
-: param-count+! ( p -- ) 2 cells + dup @ 1+ swap ! ;
 : param-used+!  ( p -- ) 3 cells + dup @ 1+ swap ! ;
 
 \ эмит имён подряд с пробелами: "a b " (как давал старый plist)
 : fl-emit-one-name ( p -- ) param-name emit-st emit-bl ;
 : fl-emit-names ( -- ) ['] fl-emit-one-name fl-params-ul @ ulist-each ;
 
-\ ---- подсчёт использований параметров (лексический скан тела) ----
-variable fl-body-lo  variable fl-body-hi
-variable fl-sv                               \ сохранённая позиция курсора
+\ ---- подсчёт использований параметров: обход дерева (flua-codegen) ----
 variable fl-cn                              \ счётчик вхождений
-variable fl-nna variable fl-nnu             \ needle: имя параметра (для сканера --stack)
-
-\ пропуск строкового литерала (курс на открывающей кавычке)
-: fl-skip-string ( -- )
-    src-next strq !
-    begin
-        src-eof? if exit then
-        src-next                       \ ( ch )
-        dup strq @ = if drop exit then \ закрывающая кавычка
-        [char] 92 = if src-next drop then \ escape: пропустить следующий символ
-    again ;
-
-\ найти начало токена `end` (мимо строк/комментариев), позицию восстановить
-variable fl-if-n                     \ глубина вложенности if..end при сканировании тела
-: fl-scan-end ( -- pos )
-    src-pos @ fl-sv !
-    0 fl-if-n !
-    begin
-        src-trivia
-        src-eof? if fl-sv @ src-pos ! 0 exit then
-        0 src-at [char] " = 0 src-at [char] ' = or if
-            fl-skip-string
-        else 0 src-at fl-alpha? if
-                src-ident
-                2dup s" if" compare 0= if      \ вложенная if — углубиться
-                    2drop
-                    1 fl-if-n +!
-                else
-                2dup s" end" compare 0= if
-                    swap src-a @ - nip          \ (pos) — позиция начала идента end
-                    fl-if-n @ 0= if            \ конец функции (не if-блока)
-                        fl-sv @ src-pos !
-                        exit                   \ (pos) — возвращаем для fl-body-hi
-                    else
-                        drop                   \ end if-блока — убрать pos
-                        -1 fl-if-n +!
-                    then
-                else 2drop then
-                then
-            else
-                src-next drop
-            then
-        then
-    again ;
-
-\ сколько раз needle (fl-nna/fl-nnu) встречается как лист в [fl-body-lo, fl-body-hi)
-: fl-count ( -- n )
-    fl-body-lo @ src-pos !
-    0 fl-cn !
-    begin
-        src-pos @ fl-body-hi @ < while
-            src-trivia
-            src-pos @ fl-body-hi @ >= if
-                fl-body-lo @ src-pos ! fl-cn @ exit
-            then
-            0 src-at [char] " = 0 src-at [char] ' = or if
-                fl-skip-string
-            else 0 src-at fl-alpha? if
-                    src-ident
-                    2dup fl-nna @ fl-nnu @ compare 0= if
-                        2drop
-                        src-trivia 0 src-at [char] ( <> if 1 fl-cn +! then
-                    else 2drop then
-                else 0 src-at fl-digit? if
-                        begin src-peek fl-digit? while src-next drop repeat
-                    else src-next drop then
-                then
-            then
-    repeat
-    fl-body-lo @ src-pos !
-    fl-cn @ ;
+variable fl-nna variable fl-nnu             \ needle: имя параметра
+variable fl-if-n                            \ вложенность if..end (число then в кодогене)
 
 \ индекс параметра по имени в ulist-структуре ( -1 если нет )
 variable pi-na  variable pi-nu  variable pi-idx  variable pi-hit
@@ -468,60 +322,14 @@ variable pi-na  variable pi-nu  variable pi-idx  variable pi-hit
     ['] fl-pi-one fl-params-ul @ ulist-each
     pi-hit @ if pi-idx @ else -1 then ;
 
-\ ============================== парсер выражений (постфиксный вывод) ==============================
-\ Приоритет (снизу вверх): .. < + - < * / < унарный - < primary
-
-defer fl-parse-expr                       \ связан с fl-parse-concat ниже
-
+\ ============================== переменные кодогена ==============================
+\ Состояние обхода AST (flua-codegen): аргументы текущего вызова.
 variable fl-karg                           \ аргументов в текущем вызове
 variable fl-cbase                          \ базовый индекс уровня в буфере аргументов
 
-: fl-parse-call ( a u -- )                \ имя прочитано, курсор на '('
-    2>r src-next drop 0 fl-karg !         \ съесть '('
-    fl-cdepth @ 8 * fl-cbase ! 1 fl-cdepth +!
-    src-trivia
-    0 src-at [char] ) = if
-        src-next drop                     \ пустой список аргументов
-    else
-        begin
-            fl-parse-expr
-            stack-mode? @ if              \ тэг аргумента — в буфер уровня
-                fl-vs @ fl-vsz @ fl-cbase @ fl-karg @ + fl-as!
-            then
-            1 fl-karg +!
-            src-trivia
-            0 src-at [char] , = if
-                src-next drop src-trivia false
-            else true then
-        until
-        0 src-at [char] ) <> abort" flua: expected ')'"
-        src-next drop
-    then
-    stack-mode? @ if                      \ тэги → актуальные слоты → выравнивание
-        fl-karg @ 0 ?do
-            fl-cbase @ i + fl-as@ swap m-find swap i fl-o!
-        loop
-        fl-karg @ fl-on !
-        fl-arrange
-    then
-    -1 fl-cdepth +!
-    2r> emit-st emit-bl                   \ имя в постфиксной позиции
-    fl-karg @ m-popn                      \ аргументы съедены → один результат
-    1 m-push-res ;
+\ ==== режим --stack: лист-параметр ====
 
-\ ==== режим --stack: подсчёт использований и лист-параметр ====
-
-: param-count! ( n p -- ) 2 cells + ! ;
-
-\ xt для ulist-each: сколько раз параметр — лист в теле (0 → ошибка)
-: fl-count-one ( p -- )
-    dup param-name fl-nnu ! fl-nna !
-    dup fl-count swap param-count!
-    dup param-count@ 0= if
-        cr ." flua: parameter '" param-name type
-        ." ' is unused (stack mode)" cr
-        -1 throw
-    then drop ;
+: param-count! ( n p -- ) 2 cells + ! ;   \ счётчик вхождений (fl-count-tree в codegen)
 
 \ Лист-параметр в режиме --stack:
 \  - первое использование: копия наверх сразу (dup / over / d pick) — значение
@@ -552,387 +360,9 @@ variable fl-li
         1 m-push-res                     \ копия = новый темп
     then ;
 
-: fl-parse-ident-expr ( a u -- )
-    src-trivia
-    0 src-at [char] ( = if fl-parse-call
-    else stack-mode? @ if fl-stack-leaf else emit-st emit-bl then then ;
-
-: fl-parse-primary ( -- )
-    src-trivia
-    src-eof? if fl-syntax-error then
-    0 src-at [char] " = if fl-parse-string exit then
-    0 src-at [char] ' = if fl-parse-string exit then
-    0 src-at fl-digit? if fl-parse-number exit then
-    0 src-at [char] ( = if                \ группировка ( expr )
-        src-next drop src-trivia fl-parse-expr src-trivia
-        0 src-at [char] ) <> if fl-syntax-error then
-        src-next drop exit
-    then
-    0 src-at fl-alpha? if src-ident fl-parse-ident-expr exit then
-    fl-syntax-error ;
-
-defer fl-parse-unary                   \ рекурсивное слово; связано ниже
-
-: fl-parse-unary-1 ( -- )
-    src-trivia
-    0 src-at [char] - = if
-        src-next drop fl-parse-unary
-        stack-mode? @ if
-            fl-vs @ m-find fl-vsz @ 0 fl-o!
-            1 fl-on !
-            fl-arrange
-        then
-        s" negate " emit-st m-pop 1 m-push-res
-    else fl-parse-primary then ;
-
-' fl-parse-unary-1 is fl-parse-unary  \ связка рекурсии на верхнем уровне
-
-: fl-parse-term ( -- )
-    fl-parse-unary
-    stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
-    begin
-        src-trivia
-        0 src-at [char] * = if
-            src-next drop fl-parse-unary
-            stack-mode? @ if
-                fl-vs @ m-find fl-vsz @ 1 fl-o!    \ правый операнд → №1
-                2r> swap m-find swap 0 fl-o!                 \ левый (тэг из R) → №0
-                2 fl-on !
-                fl-arrange
-            then
-            s" * " emit-st 2 m-popn 1 m-push-res
-            stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
-            false
-        else
-            0 src-at [char] / = if
-                src-next drop fl-parse-unary
-                stack-mode? @ if
-                    fl-vs @ m-find fl-vsz @ 1 fl-o!
-                    2r> swap m-find swap 0 fl-o!
-                    2 fl-on !
-                    fl-arrange
-                then
-                s" / " emit-st 2 m-popn 1 m-push-res
-                stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
-                false
-            else true then
-        then
-    until
-    stack-mode? @ if 2r> 2drop then ;
-
-: fl-parse-additive ( -- )
-    fl-parse-term
-    stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
-    begin
-        src-trivia
-        0 src-at [char] + = if
-            src-next drop fl-parse-term
-            stack-mode? @ if
-                fl-vs @ m-find fl-vsz @ 1 fl-o!
-                2r> swap m-find swap 0 fl-o!
-                2 fl-on !
-                fl-arrange
-            then
-            s" + " emit-st 2 m-popn 1 m-push-res
-            stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
-            false
-        else
-            0 src-at [char] - = if
-                src-next drop fl-parse-term
-                stack-mode? @ if
-                    fl-vs @ m-find fl-vsz @ 1 fl-o!
-                    2r> swap m-find swap 0 fl-o!
-                    2 fl-on !
-                    fl-arrange
-                then
-                s" - " emit-st 2 m-popn 1 m-push-res
-                stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
-                false
-            else true then
-        then
-    until
-    stack-mode? @ if 2r> 2drop then ;
-
-: fl-parse-concat ( -- )
-    fl-parse-additive
-    stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
-    begin
-        src-trivia
-        0 src-at [char] . = 1 src-at [char] . = and if
-            src-next drop src-next drop
-            src-trivia fl-parse-additive
-            stack-mode? @ if
-                fl-vs @ m-find fl-vsz @ 1 fl-o!
-                2r> swap m-find swap 0 fl-o!
-                2 fl-on !
-                fl-arrange
-            then
-            s" s+ " emit-st 4 m-popn 2 m-push-res
-            stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
-            false
-        else true then
-    until
-    stack-mode? @ if 2r> 2drop then ;
-
-: fl-parse-relational ( -- )
-    fl-parse-concat
-    stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
-    begin
-        src-trivia
-        0 src-at [char] < = 1 src-at [char] = = and if          \ <=
-            src-next drop src-next drop
-            src-trivia fl-parse-concat
-            stack-mode? @ if
-                fl-vs @ m-find fl-vsz @ 1 fl-o!
-                2r> swap m-find swap 0 fl-o!
-                2 fl-on !
-                fl-arrange
-            then
-            s" <= " emit-st 2 m-popn 1 m-push-res
-            stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
-            false
-        else
-        0 src-at [char] > = 1 src-at [char] = = and if          \ >=
-            src-next drop src-next drop
-            src-trivia fl-parse-concat
-            stack-mode? @ if
-                fl-vs @ m-find fl-vsz @ 1 fl-o!
-                2r> swap m-find swap 0 fl-o!
-                2 fl-on !
-                fl-arrange
-            then
-            s" >= " emit-st 2 m-popn 1 m-push-res
-            stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
-            false
-        else
-        0 src-at [char] < = if                                  \ <
-            src-next drop
-            src-trivia fl-parse-concat
-            stack-mode? @ if
-                fl-vs @ m-find fl-vsz @ 1 fl-o!
-                2r> swap m-find swap 0 fl-o!
-                2 fl-on !
-                fl-arrange
-            then
-            s" < " emit-st 2 m-popn 1 m-push-res
-            stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
-            false
-        else
-        0 src-at [char] > = if                                  \ >
-            src-next drop
-            src-trivia fl-parse-concat
-            stack-mode? @ if
-                fl-vs @ m-find fl-vsz @ 1 fl-o!
-                2r> swap m-find swap 0 fl-o!
-                2 fl-on !
-                fl-arrange
-            then
-            s" > " emit-st 2 m-popn 1 m-push-res
-            stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
-            false
-        else
-        0 src-at [char] ~ = if                                  \ ~=
-            src-next drop src-next drop
-            src-trivia fl-parse-concat
-            stack-mode? @ if
-                fl-vs @ m-find fl-vsz @ 1 fl-o!
-                2r> swap m-find swap 0 fl-o!
-                2 fl-on !
-                fl-arrange
-            then
-            s" <> " emit-st 2 m-popn 1 m-push-res
-            stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
-            false
-        else
-        0 src-at [char] = = 1 src-at [char] = = and if          \ ==
-            src-next drop src-next drop
-            src-trivia fl-parse-concat
-            stack-mode? @ if
-                fl-vs @ m-find fl-vsz @ 1 fl-o!
-                2r> swap m-find swap 0 fl-o!
-                2 fl-on !
-                fl-arrange
-            then
-            s" = " emit-st 2 m-popn 1 m-push-res
-            stack-mode? @ if fl-vs @ fl-vsz @ 2>r then
-            false
-        else true then then then then then then
-    until
-    stack-mode? @ if 2r> 2drop then ;
-
-' fl-parse-relational is fl-parse-expr        \ связка defer (только на верхнем уровне)
-
-
-\ ============================== определение функции ==============================
-
-\ ============================== парсер тела функции (if/return/end) ==============================
-\ Тело: return expr | if c then return X [elseif ...] [else ...] end (вариант A,
-\ else опционален). Условие — целое (0 = ложь, ≠0 = истина).
-\ return в ветке генерирует exit + nip-очистку; верхнеуровневый return — без exit.
-
-variable kw-a   variable kw-u   \ текущий keyword-токен тела
-
-\ пропустить ключевое слово 'return' (курсор встаёт за него)
-: fl-skip-return ( -- )
-    src-trivia
-    src-ident kw-u ! kw-a !
-    kw-a @ kw-u @ s" return" compare 0<> if fl-syntax-error then ;
-
-: fl-parse-return-stmt ( -- )      \ курсор после 'return' (в ветке if — с exit)
-    fl-parse-expr
-    stack-mode? @ if
-        fl-vs @ m-find fl-vsz @ 0 fl-o!
-        1 fl-on !
-        fl-arrange
-        \ return в ветке if оставляет ровно 1 значение: убрать всё под
-        \ результатом (параметры). Модель НЕ трогаем — она хранит
-        \ [params, result] для m-pop в elseif/else.
-        m-len @ 1- 0 ?do s" nip " emit-st loop
-    then
-    s" exit " emit-st emit-nl ;
-
-: fl-parse-return-top ( -- )      \ верхнеуровневый return (без exit — ; завершает слово)
-    fl-parse-expr
-    stack-mode? @ if
-        fl-vs @ m-find fl-vsz @ 0 fl-o!
-        1 fl-on !
-        fl-arrange
-    then
-    emit-nl ;
-
-: fl-parse-if-stmt ( -- )          \ курсор после 'if'
-    fl-parse-expr                  \ условие (целое выражение)
-    stack-mode? @ if
-        fl-vs @ m-find fl-vsz @ 0 fl-o!
-        1 fl-on !
-        fl-arrange
-    then
-    s" if " emit-st emit-nl
-    stack-mode? @ if m-pop then    \ условие съедается run-time if
-    1 fl-if-n !
-    src-trivia
-    src-ident kw-u ! kw-a !        \ сохранить токен
-    kw-a @ kw-u @ s" then" compare 0<> if fl-syntax-error then   \ проверить 'then'
-    fl-skip-return
-    fl-parse-return-stmt           \ then-ветка (return всегда выход)
-    \ цикл: elseif / else / end
-    begin
-        src-trivia
-        src-ident kw-u ! kw-a !
-        kw-a @ kw-u @ s" elseif" compare 0= if
-            stack-mode? @ if m-pop then   \ результат then-ветки израсходован if'ом
-            1 fl-if-n +!
-            s" else " emit-st emit-nl
-            fl-parse-expr             \ условие elseif
-            stack-mode? @ if
-                fl-vs @ m-find fl-vsz @ 0 fl-o!
-                1 fl-on !
-                fl-arrange
-            then
-            s" if " emit-st emit-nl
-            stack-mode? @ if m-pop then   \ условие elseif съедается if'ом
-            src-trivia
-            src-ident kw-u ! kw-a !
-            kw-a @ kw-u @ s" then" compare 0<> if fl-syntax-error then
-            fl-skip-return
-            fl-parse-return-stmt
-            false                     \ продолжить цикл (until выйдет при true)
-        else
-            kw-a @ kw-u @ s" else" compare 0= if
-                stack-mode? @ if m-pop then
-                s" else " emit-st emit-nl
-                fl-skip-return
-                fl-parse-return-stmt
-                src-trivia
-                src-ident kw-u ! kw-a !
-                kw-a @ kw-u @ s" end" compare 0<> if fl-syntax-error then   \ прочитать end if-блока
-                true
-            else
-                kw-a @ kw-u @ s" end" compare 0= if
-                    true              \ выйти из цикла
-                else
-                    fl-syntax-error
-                then
-            then
-        then
-    until
-    fl-if-n @ 0 ?do s" then " emit-st loop
-    emit-nl ;
-
-: fl-parse-body-stmts ( -- )       \ парсит stmt'ы до 'end'
-    begin
-        src-trivia
-        src-ident kw-u ! kw-a !
-        kw-a @ kw-u @ s" end" compare 0= if exit then   \ end функции
-        kw-a @ kw-u @ s" if" compare 0= if
-            fl-parse-if-stmt
-        else
-            kw-a @ kw-u @ s" return" compare 0= if
-                fl-parse-return-top
-            else
-                fl-syntax-error
-            then
-        then
-    again ;
-
+\ ============================== имя генерируемой функции (кодоген) ==============================
 variable fl-fname-a
 variable fl-fname-u
-variable fl-param-count
-: fl-parse-function ( -- )
-    cm-flush                              \ комментарий перед function — в шапку
-    src-trivia src-ident                  \ имя функции
-    fl-fname-u ! fl-fname-a !
-    src-trivia
-    0 src-at [char] ( <> if fl-syntax-error then
-    src-next drop                         \ съесть '('
-    ulist-new fl-params-ul !
-    src-trivia
-    0 src-at [char] ) = if                \ () — параметров нет
-        src-next drop
-    else
-        begin
-            src-trivia
-            src-ident dup 0= if 2drop fl-syntax-error then
-            param-new fl-params-ul @ ulist-add
-            src-trivia
-            0 src-at [char] , = if
-                src-next drop false
-            else
-                0 src-at [char] ) = if
-                    src-next drop true
-                else fl-syntax-error then
-            then
-        until
-    then
-    fl-params-ul @ ulist-reverse            \ ulist-add кладёт в голову: вернуть порядок
-    \ модель стека: слоты 0..n-1 = параметры по порядку объявления
-    m-reset
-    fl-params-ul @ ulist-len 0 ?do i m-append loop
-    stack-mode? @ if
-        src-pos @ fl-body-lo !
-        fl-scan-end fl-body-hi !
-        ['] fl-count-one fl-params-ul @ ulist-each
-    then
-    \ шапка: стековая нотация из входных параметров
-    s" \ ( " emit-st
-    fl-emit-names
-    s" -- r )" emit-st emit-nl
-    \ определение слова
-    s" : " emit-st fl-fname-a @ fl-fname-u @ emit-st emit-bl
-    fl-params-ul @ ulist-len 0> stack-mode? @ 0= and if
-        s" { " emit-st fl-emit-names s" }" emit-st
-    then
-    emit-nl
-    \ тело: stmt'* end  (stmt := if ... | return expr)
-    fl-parse-body-stmts
-    s" ;" emit-st emit-nl
-    stack-mode? @ if
-        m-len @ 1 < if
-            cr ." flua: stack mode: empty result (final depth " m-len @ . ." )" cr
-            -1 throw
-        then
-    then
-    fl-params-ul @ ulist-dispose ;
 
 \ ============================== конвейер: парсер AST + кодогенератор ========
 \ Токены → дерево (flua-ast) → из дерева: код (flua-codegen) и --ast (бесплатно).
