@@ -406,11 +406,16 @@ require ./flua-codegen.4th
     then
     slurp-file ;
 
+\ CLI выводит emit-result как есть, без cr: буфер уже заканчивается
+\ переводом строки (генерат — ";\n", AST — "\n"). Лишний cr давал бы
+\ пустой хвост и ронял байт-в-байт совпадение `flua f > out` с эталонами
+\ golden (golden-test сравнивает ровно emit-result); пустой исходник даёт
+\ пустой вывод — тоже без паразитного "\n".
 : flua.compile-cli ( -- )
-    flua.src fl-compile emit-result type cr ;
+    flua.src fl-compile emit-result type ;
 
 : flua.ast-cli ( -- )
-    flua.src fl-ast-run emit-result type cr ;
+    flua.src fl-ast-run emit-result type ;
 
 : flua.read-mode ( -- )
     s" FLUA_MODE" getenv dup 0= if 2drop exit then
