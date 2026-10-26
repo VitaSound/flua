@@ -99,6 +99,22 @@ variable tok-i                          \ курсор чтения (парсе�
 : tok-op1 ( -- )                       \ одиночный операторный символ
     src-pos @ >r src-next drop TK-OP r> tok-span ;
 
+\ текущая пара символов — один из «<=», «>=», «==», «~="?
+: tok-pair2? ( -- f )
+    src-peek [char] < =
+    src-peek [char] > = or
+    src-peek [char] = = or
+    src-peek [char] ~ = or
+    if 1 src-at [char] = = else false then ;
+
+\ «..», «<=», «>=», «==», «~=" — два символа; иначе один
+: tok-op2 ( -- )
+    src-peek [char] . = 1 src-at [char] . = and if tok-dot2 exit then
+    tok-pair2? if
+        src-pos @ >r src-next drop src-next drop TK-OP r> tok-span exit
+    then
+    tok-op1 ;
+
 \ ------------------- основной проход -------------------
 
 : fl-tokenize ( -- )
@@ -112,8 +128,7 @@ variable tok-i                          \ курсор чтения (парсе�
         0 src-at fl-digit? if tok-number else
         0 src-at fl-alpha? if tok-ident else
         src-comment? if tok-comment else
-            src-peek [char] . = 1 src-at [char] . = and if
-                tok-dot2 else tok-op1 then
+            tok-op2
         then then then then
     again ;
 

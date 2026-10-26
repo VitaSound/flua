@@ -75,6 +75,71 @@ T{ s\" function p(a,b) return (a+b)*b end"
 "
    ast? -> true }T
 
+\ ---------- ветвление if ----------
+T{ s\" function m(a,b) if a > b then return a else return b end end"
+   s\" fn m(a, b)
+  if
+    bin >
+      id a
+      id b
+  then
+    id a
+  else
+    id b
+  end
+"
+   ast? -> true }T
+
+\ else опционален: без него есть только then-ветка
+T{ s\" function one(x) if x then return x end end"
+   s\" fn one(x)
+  if
+    id x
+  then
+    id x
+  end
+"
+   ast? -> true }T
+
+\ elseif-цепочка: каждая ветка — условие (нет у else) + значение
+T{ s\" function abs(n)
+  if n < 0 then return -n
+  elseif n > 0 then return n
+  else return 0
+  end
+end"
+   s\" fn abs(n)
+  if
+    bin <
+      id n
+      num 0
+  then
+    un -
+      id n
+  elseif
+    bin >
+      id n
+      num 0
+  then
+    id n
+  else
+    num 0
+  end
+"
+   ast? -> true }T
+
+\ несколько stmt'ов в теле: if-блок и return после него
+T{ s\" function two(x) if x then return x end return 0 end"
+   s\" fn two(x)
+  if
+    id x
+  then
+    id x
+  end
+  num 0
+"
+   ast? -> true }T
+
 \ ---------- несколько функций, комментарии ----------
 T{ s\" -- head
 function one() return 1 end
@@ -93,6 +158,12 @@ T{ s\" " s\" " ast? -> true }T
 T{ s\" function broken(a return a end" ast-error? -> true }T
 T{ s\" x = 1" ast-error? -> true }T
 T{ s\" function f() return 1 + end" ast-error? -> true }T
+\ ветка if без return — синтаксическая ошибка
+T{ s\" function bad(x) if x then x end end" ast-error? -> true }T
+\ пустой return в ветке
+T{ s\" function bad(x) if x then return x else return end" ast-error? -> true }T
+\ нет end блока if
+T{ s\" function bad(x) if x then return x end" ast-error? -> true }T
 
 \ после ошибки парсер и реестр узлов (an-reset) работоспособны
 T{ s\" function ok(x) return x end"

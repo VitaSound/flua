@@ -934,22 +934,19 @@ variable fl-param-count
     then
     fl-params-ul @ ulist-dispose ;
 
+\ ============================== конвейер: парсер AST + кодогенератор ========
+\ Токены → дерево (flua-ast) → из дерева: код (flua-codegen) и --ast (бесплатно).
+require ./flua-ast.4th
+require ./flua-codegen.4th
+
 \ ============================== компилятор ==============================
+\ Единый путь: fl-p-program строит дерево (и буферы шапок-комментариев),
+\ fl-codegen обходит его и эмитит Forth в emit-buf.
 
 : fl-compile ( a u -- )
     src-set emit-reset 0 fl-cdepth !
-    begin
-        cm-reset                           \ мусор тела прошлой функции — в утиль
-        src-trivia-cm                     \ комментарии перед function → в буфер
-        src-eof? if exit then
-        src-ident 2dup s" function" compare 0<> if 2drop fl-syntax-error then 2drop
-        fl-parse-function
-    again ;
-
-\ ============================== AST (--ast) ==============================
-\ Отдельный конвейер поверх токенов: токенизатор + парсер в AST + печать
-\ дерева в emit-buf. Путь компиляции не задействован.
-require ./flua-ast.4th
+    fl-p-program                        \ токены → дерево функций
+    fl-codegen ;                        \ дерево → код в emit-buf
 
 \ ============================== CLI ==============================
 
