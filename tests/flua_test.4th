@@ -250,6 +250,18 @@ T{ s\" function mixed(a,b,c) return a * b % c + a end" run-stack 2 3 4 mixed -> 
 \ соседние токены не слипаются с ним
 T{ s\" function m(a,b) return a % b end" 9 tok-of -> TK-OP 1 }T
 
+\ ---------- позиция ошибки: строка/столбец ----------
+\ src-line-col: байт → (line col); границы строк — одиночный \n (10)
+T{ s\" line one
+line two" src-set 0 src-line-col -> 1 1 }T
+T{ s\" line one
+line two" src-set 9 src-line-col -> 2 1 }T
+T{ s\" line one
+line two" src-set 13 src-line-col -> 2 5 }T
+\ сообщение об ошибке — чистая функция, байт-в-байт
+T{ s\" line one
+line two" src-set 10 fl-syntax-msg s" 2:2 (offset 10)" compare -> 0 }T
+
 \ ---------- ошибки парсинга ----------
 T{ s\" naf return x end" expect-error -> true }T
 T{ s\" function broken( return end" expect-error -> true }T

@@ -71,7 +71,7 @@ require ./flua-tokens.4th
     repeat ;
 
 : fl-p-error ( -- )
-    ." flua: syntax error at offset " tok-p . cr -1 throw ;
+    tok-p fl-syntax-error ;
 
 \ текущий значимый токен — ключевое слово a u?
 : tok-kw? ( a u -- f )

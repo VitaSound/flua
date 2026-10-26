@@ -259,9 +259,40 @@ variable cm-u                            \ сколько занято
     cm-buf cm-u @ emit-st cm-reset ;
 
 \ ============================== синтаксическая ошибка ==============================
+\ позиция байта в исходнике → строка и столбец (с 1; границы строк — \n)
+\ два прохода: в каждом цикле один аккумулятор сверху — без ручной
+\ перестановки пары (line start), которая ломается при утечке стека
+: src-count-nl ( off -- n )                \ сколько \n в байтах [0, off)
+    { off } 0
+    off 0 ?do src-a @ i + c@ 10 = if 1+ then loop ;
 
-: fl-syntax-error ( -- )
-    ." flua: syntax error at offset " src-pos @ . cr
+: src-last-nl ( off -- n )                 \ позиция после последнего \n (0 — нет)
+    { off } 0
+    off 0 ?do src-a @ i + c@ 10 = if drop i 1+ then loop ;
+
+: src-line-col ( off -- line col )
+    { off }
+    off src-count-nl 1+                    \ line
+    off src-last-nl                        \ ( line start )
+    off swap - 1+ ;                        \ ( line col )
+
+\ сообщение «L:C (offset N)» собирается в буфере — чистая функция,
+\ проверяется тестом байт-в-байт
+create fl-err-buf 64 allot
+variable fl-err-i
+: fl-err+ ( a u -- )  { a u } a fl-err-buf fl-err-i @ + u move u fl-err-i +! ;
+: fl-err-ch ( c -- )  fl-err-buf fl-err-i @ + c! 1 fl-err-i +! ;
+: fl-err-num ( n -- ) s>d <# #s #> fl-err+ ;
+
+: fl-syntax-msg ( off -- a u )        \ «L:C (offset N)» в fl-err-buf
+    { off }
+    0 fl-err-i !
+    off src-line-col swap fl-err-num s" :" fl-err+ fl-err-num
+    s"  (offset " fl-err+ off fl-err-num s" )" fl-err+
+    fl-err-buf fl-err-i @ ;
+
+: fl-syntax-error ( off -- )          \ сообщение + throw (-1)
+    ." flua: syntax error at " fl-syntax-msg type cr
     -1 throw ;
 
 \ ============================== идентификатор (токенизатор) ==============================
@@ -338,7 +369,7 @@ variable fl-cbase                          \ базовый индекс уро�
 \    подъём выполнит потребитель (fl-arrange) перед своим токеном.
 variable fl-li
 : fl-stack-leaf ( a u -- )
-    fl-param-idx dup 0< if 2drop fl-syntax-error then
+    fl-param-idx dup 0< if 2drop src-pos @ fl-syntax-error then
     fl-li !
     fl-li @ fl-params-ul @ ulist-nth-addr param-used+!
     fl-li @ fl-params-ul @ ulist-nth-addr param-count@
