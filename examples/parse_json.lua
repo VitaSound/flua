@@ -1,15 +1,22 @@
--- Parse JSON via fjson (host include), put fields into a Lua/fenum map.
+-- Parse JSON via fjson (-- @require), put fields into a Lua/fenum map.
 --
---   flua examples/parse_json.lua > /tmp/parse_json.4th
---   gforth examples/json_bridge.4th /tmp/parse_json.4th -e bye
+-- gforth resolves require/fpath relative to the *generated* .4th file.
+-- Write the output into the flua repo root (sibling of ../fenum, ../fjson):
 --
--- json_bridge.4th: require fjson + aliases fjson-node-str / fjson-node-num.
--- fjson.parse → дерево нод (не hashmap); поля кладём в {} сами.
+--   flua examples/parse_json.lua > parse_json.out.4th
+--   gforth parse_json.out.4th -e bye
+--
+-- -- @fpath / -- @require emit host load; @ in Forth names → Lua _at
+-- (fjson.node-str@ → fjson_node_str_at), no alias preamble.
+
+-- @fpath ../fjson/fjson
+-- @require ../fenum/fenum.4th
+-- @require ../fjson/fjson.4th
 
 -- @forth fjson.parse ( a u -- node )
 -- @forth fjson.object-get ( ka ku obj -- node )
--- @forth fjson-node-str ( node -- a u )
--- @forth fjson-node-num ( node -- u )
+-- @forth fjson.node-str@ ( node -- a u )
+-- @forth fjson.node-num@ ( node -- u )
 -- @forth fjson.node-free ( node -- )
 -- @forth TM-STR ( -- t )
 -- @forth TM-INT ( -- t )
@@ -22,9 +29,9 @@ function demo()
   if root == 0 then abort("parse") end
 
   local ns = fjson_object_get("name", root)
-  local na, nu = fjson_node_str(ns)
+  local na, nu = fjson_node_str_at(ns)
   local nn = fjson_object_get("n", root)
-  local n = fjson_node_num(nn)
+  local n = fjson_node_num_at(nn)
 
   local m = {}
   local ts = TM_STR()

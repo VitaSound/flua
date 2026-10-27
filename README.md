@@ -1,7 +1,7 @@
 # flua — Lua-subset to Forth transpiler
 [![License](https://img.shields.io/badge/License-COPL-red.svg)](https://raw.githubusercontent.com/VitaSound/flua/refs/heads/main/LICENSE)
 [![Ver](https://img.shields.io/badge/Ver-0.1.0-green.svg)](https://github.com/VitaSound/flua/releases/tag/0.1.0)
-[![Cov](https://img.shields.io/badge/Cov-91%25-brightgreen.svg)](https://github.com/VitaSound/flua)
+[![Cov](https://img.shields.io/badge/Cov-93%25-brightgreen.svg)](https://github.com/VitaSound/flua)
 
 Transpiles a simple Lua subset to Gforth-compatible Forth source.
 **Реализация — только Forth (Gforth), без Python и внешних зависимостей.**
@@ -37,6 +37,8 @@ Transpiles a simple Lua subset to Gforth-compatible Forth source.
 
 - **`-- @forth`**: импорт уже существующего слова Gforth/пакета — см. раздел
   [Host Forth](#host-forth) ниже
+- **`-- @require path` / `-- @fpath dir`**: эмит `require` / `fpath path+`
+  в начале генерата (пакеты без отдельного preamble)
 - **`for i = lo, hi do … end`**: → `hi 1+ lo ?do … loop` (индекс = Forth `i`)
 - **`abort("msg")`**: builtin → `true abort" msg"`
 - **Таблицы → fenum**: `{ k = v }` → `hashmap-*`; `{ v1, v2 }` → `ulist-*`;
@@ -47,8 +49,7 @@ Transpiles a simple Lua subset to Gforth-compatible Forth source.
 
 **Чего нет (сейчас в codegen):** `break`, `goto`, `nil`/`true`/`false` как
 литералы; вложенные `function`; varargs; `--[[ ]]`;
-`local`/assign/`for` в `-- @stack`; **`-- @require` / `include` из `.lua`**
-(библиотеки грузит host preamble — см. ниже). Не Lua-VM / RTTI — генерат
+`local`/assign/`for` в `-- @stack`. Не Lua-VM / RTTI — генерат
 должен читаться как типичный Gforth. Int-ключ в `t[i]` = только ulist.
 
 ## Output shape
@@ -143,33 +144,42 @@ local fid, ior = open_file("x.txt", r_o())
 - В генерате будет вызов Forth-слова `open-file` / `r/o`.
 - **Клеточная arity**: сумма клеток аргументов = `in` в `( in -- out )`.
   Строка (литерал или `2VALUE`) = **2** клетки → один Lua-аргумент-строка
-  закрывает два слота. Неизвестное (`ncells=0`) считается как 1.
-- Lua-имя: `-` `.` `?` `/` → `_` (`open-file`→`open_file`, `r/o`→`r_o`).
-  Символ **`@` в имени не мапится** — нельзя написать `fjson_node_str@` в Lua;
-  сделайте алиас в Forth (`: fjson-node-str … fjson.node-str@ ;`) и импортируйте его.
+  закрывает два слота. Param/local = **1** клетка; нетипизированный ID на
+  аргументе `@forth` → ошибка (не тихий `0→1`).
+- Lua-имя: `-` `.` `?` `/` → `_`; **`@` → `_at`**
+  (`open-file`→`open_file`, `fjson.node-str@`→`fjson_node_str_at`).
+  Эмит вызова — исходное Forth-имя (с `@`).
 - `out` стыкуется multi-assign: `local a, b = word(...)`.
-- `-- @forth` **не загружает** файл: только имя + arity. Если слова ещё нет
-  в словаре host’а → `Undefined word` при `include` генерата.
+- Outs **пользовательских** `function` тоже в реестре: `x = add(1,2)` при
+  `return a, b` → `out-arity mismatch`.
 
-### Как подключить пакет (`include` / `require`)
+### Как подключить пакет (`-- @require` / `-- @fpath`)
 
-Сейчас из `.lua` **нельзя** эмитить `include`. Паттерн:
-
-1. `.lua` — логика + `-- @forth …`
-2. короткий host preamble `.4th` — `include`/`fpath` библиотек (+ алиасы)
-3. запуск: preamble **перед** генератом
-
-```bash
-flua examples/parse_json.lua > /tmp/parse_json.4th
-gforth examples/json_bridge.4th /tmp/parse_json.4th -e bye
+```lua
+-- @fpath ../fjson/fjson
+-- @require ../fenum/fenum.4th
+-- @require ../fjson/fjson.4th
+-- @forth fjson.parse ( a u -- node )
 ```
 
-`json_bridge.4th` подтягивает fenum + fjson и объявляет `fjson-node-str` /
-`fjson-node-num`. Пути в preamble — **от каталога этого `.4th`** (gforth
-при `include` файла меняет относительную базу).
+В начале генерата:
 
-Для файлов без внешних пакетов preamble не нужен — хватает слов ядра Gforth
-(после transpile):
+```forth
+fpath path+ ../fjson/fjson
+require ../fenum/fenum.4th
+require ../fjson/fjson.4th
+```
+
+Пути в `@require`/`@fpath` — **от каталога сгенерированного `.4th`**
+(как `include` в gforth). Пишите генерат в корень репо flua (рядом с
+sibling `../fenum`, `../fjson`):
+
+```bash
+flua examples/parse_json.lua > parse_json.out.4th
+gforth parse_json.out.4th -e bye
+```
+
+Для файлов только на словах ядра Gforth `@require` не нужен:
 
 ```bash
 flua examples/read_file.lua > /tmp/read_file.4th
@@ -183,8 +193,8 @@ gforth -e 'include /tmp/read_file.4th bye'   # из корня репо (пут�
 | [`examples/read_file.lua`](examples/read_file.lua) | `r/o`, `open-file`, `allocate`, `read-file`, `type`, `cr` |
 | [`examples/slurp_file.lua`](examples/slurp_file.lua) | `slurp-file` |
 | [`examples/data.txt`](examples/data.txt) | фикстура для чтения |
-| [`examples/json_bridge.4th`](examples/json_bridge.4th) | host `include` fjson + алиасы без `@` |
-| [`examples/parse_json.lua`](examples/parse_json.lua) | `fjson.parse` → поля → Lua `{}` (fenum hashmap) |
+| [`examples/parse_json.lua`](examples/parse_json.lua) | `@require` fjson + `fjson.node-str@` → `_at` → Lua `{}` |
+| [`examples/json_bridge.4th`](examples/json_bridge.4th) | deprecated; используйте `@require` в `.lua` |
 
 Замечание: `fjson.parse` даёт **дерево нод**, не hashmap. В map кладёте
 поля сами (`hashmap-set` / присваивания). Обратное (map→JSON) — `fjson.emit-mmap`.
@@ -192,9 +202,8 @@ gforth -e 'include /tmp/read_file.4th bye'   # из корня репо (пут�
 ### Ловушки
 
 - Параметр Lua-функции = **1** клетка locals. Строковый путь как один
-  `function f(path)` + внутри `open_file(path, fam)` **не** сработает по
-  arity (path локаль неизвестна → 1 клетка). Передавайте литерал/`2VALUE`
-  на call-site `@forth` или явные `a, u`.
+  `function f(path)` + внутри `open_file(path, fam)` → arity mismatch /
+  `untyped arg` — передавайте литерал/`2VALUE` или явные `a, u`.
 - `print(buf, got)` для буфера `(addr u)` печатает два целых; для текста —
   `@forth type` / `cr`.
 - Имена функций с `_`: define оставляет `_`, вызов эмитит `-` — лучше

@@ -59,6 +59,7 @@ end
 ```
 
 - top-level: `function` | `local`/`name = expr` (→ VALUE) | expr | `print(...)`;
+  прагмы `-- @require path`, `-- @fpath dir`, `-- @forth …`;
 - в функции: `local`/`assign`/`return`/`if`/`while`/`repeat`/`print(...)`
   (и др. call-stmt; stmt-списки в ветках);
 - `print(a, b)` → `0 .r` / `type` + `space` + `cr` (0 results);
@@ -71,16 +72,19 @@ end
 Дополнительно:
 
 ```lua
+-- @fpath ../fjson/fjson
+-- @require ../fenum/fenum.4th
 -- @forth open-file ( c-addr u fam -- fileid ior )
 -- @forth r/o ( -- fam )                  -- '/' → '_' → r_o()
-local fid, ior = open_file(path, r_o())   -- path-строка = 2 клетки + fam
--- @forth fjson.str-concat ( a1 u1 a2 u2 -- a3 u3 )
-local a, u = fjson_str_concat(a1, u1, a2, u2)  -- '.'/'?'/'/' → '_'
+-- @forth fjson.node-str@ ( node -- a u ) -- '@' → '_at' → fjson_node_str_at
+local a, u = fjson_node_str_at(node)
+local fid, ior = open_file("x.txt", r_o()) -- path-строка = 2 клетки + fam
 abort("open")
 for i = 1, n do s = s + i end             -- → ?do / loop, индекс = i
 local m = { a = 1 }                       -- hashmap
 local xs = { 10, 20 }                     -- ulist
 local vt, v1, v2, ok = m.a                -- hashmap-get (не x = m.a)
+m.n = x                                   -- local int → TM-INT
 xs[0] = 99                                -- ulist-set-term
 ```
 
@@ -88,13 +92,14 @@ xs[0] = 99                                -- ulist-set-term
 
 - Билтины только `print` / `abort("…")`. Всё остальное (файлы, `type`,
   `cr`, fjson, …) — слова host’а через `-- @forth name ( in -- out )`.
-- Arity **клеточная**: сумма `ncells` аргументов; строка = 2; `0`→1.
-- Имена: `-./?/` → `_`. Символ **`@` не мапится** → алиас в `.4th`.
-- `-- @forth` **не** делает `include`. Прагмы `-- @require` нет.
-  Пакет грузить host preamble’ом **перед** генератом:
-  `gforth examples/json_bridge.4th /tmp/out.4th -e bye`.
-- Примеры: `examples/read_file.lua`, `slurp_file.lua`, `parse_json.lua` +
-  `json_bridge.4th`. Полный текст — [README § Host Forth](README.md#host-forth).
+- Arity **клеточная**: сумма `ncells` аргументов; строка = 2; param/local = 1.
+  Нетипизированный ID → ошибка на `@forth` (не тихий `0→1`).
+- Имена: `-./?/` → `_`; **`@` → `_at`**.
+- `-- @require path` / `-- @fpath dir` → эмит в начале генерата; пути от
+  каталога генерата (gforth). Примеры: `examples/read_file.lua`,
+  `slurp_file.lua`, `parse_json.lua`. Полный текст —
+  [README § Host Forth](README.md#host-forth).
+- Outs пользовательских `function` в реестре (не default 1 вслепую).
 
 Нельзя:
 
@@ -103,7 +108,6 @@ xs[0] = 99                                -- ulist-set-term
 - `local`/assign/`for` внутри `-- @stack` функции;
 - RTTI / скрытая типизация строк (держите `a, u` явно);
 - смешанный литерал `{ 1, a = 2 }`;
-- `include`/`require` из `.lua` (только preamble);
 - single-assign от index-get: `x = m.a` → ошибка, нужен multi-assign.
 
 ## Контейнеры → fenum
@@ -132,11 +136,12 @@ xs[0] = 99                                -- ulist-set-term
 5. **Unused param** в `@stack` — ошибка.
 6. **Проверяю только компиляцию** — всегда гоняйте `gforth -e 'include …'`.
 7. **Смешанный `{1, a=2}`** — ошибка; int `t[i]` = ulist, не hashmap.
-8. **`-- @forth` без `include` пакета** — Undefined word; нужен preamble.
-9. **Строковый `path` как Lua-param** + `@forth` на 3 клетки — arity miss;
-   литерал/`2VALUE` на call-site или явные `a, u`.
+8. **`-- @forth` без `@require` пакета** — Undefined word; добавьте
+   `-- @require` / `-- @fpath` (пути от каталога генерата).
+9. **Строковый `path` как Lua-param** + `@forth` на 3 клетки — arity miss /
+   `untyped arg`; литерал/`2VALUE` или явные `a, u`.
 10. **`print(addr, u)`** ≠ текст; для буфера — `@forth type`.
-11. **Слово с `@` в имени** — не импортируется в Lua; алиас в preamble.
+11. **`@` в Forth-имени** → Lua `_at` (`fjson_node_str_at`), эмит с `@`.
 
 ## Как добавить тест под новую фичу
 

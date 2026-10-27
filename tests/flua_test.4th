@@ -437,6 +437,11 @@ function bad(n, fam)
   local fid, ior = open_file(n, fam)
   return fid
 end" expect-error -> true }T
+\ неизвестный ID на @forth → untyped arg (не тихий 0→1)
+T{ s\" -- @forth type ( c-addr u -- )
+function bad()
+  type(unknown_buf)
+end" expect-error -> true }T
 T{ s\" function sum_to(n)
   local s = 0
   for i = 1, n do
@@ -487,6 +492,80 @@ T{ s\" function wrap()
   local vt, v1, v2, fl = m.a
   return vt, v1, fl
 end" run-generated wrap -> 1 1 -1 }T
+
+\ ---------- @ → _at / @require / @fpath ----------
+T{ s" fjson.node-str@" fl-forth-to-lua s" fjson_node_str_at" compare -> 0 }T
+T{ s\" -- @fpath ../fjson/fjson
+-- @require ../fenum/fenum.4th
+-- @forth cr ( -- )
+function f()
+  cr()
+end"
+   s" fpath path+ ../fjson/fjson" has-output? -> true }T
+T{ s\" -- @require ../fenum/fenum.4th
+-- @require ../fjson/fjson.4th
+function f() return 1 end"
+   s" require ../fenum/fenum.4th" has-output? -> true }T
+\ порядок объявления (не LIFO): a.4th раньше b.4th в выводе
+: require-order-ok? ( -- f )
+    s\" -- @require a.4th
+-- @require b.4th
+function f() return 1 end" fl-compile
+    emit-result { a u }
+    a u s" require a.4th" search 0= if 2drop false exit then
+    { a1 u1 }                       \ a1 — после совпадения a.4th
+    a1 u1 s" require b.4th" search nip nip ;
+T{ require-order-ok? -> true }T
+
+\ ---------- local ncells / m.n = local_int ----------
+T{ s\" function f(x)
+  local y = x + 1
+  local m = {}
+  m.n = y
+  return y
+end" s" TM-INT y" has-output? -> true }T
+T{ s\" function f(x)
+  local y = x + 1
+  local m = {}
+  m.n = y
+  local vt, v, z, ok = m.n
+  return v
+end" run-generated 3 f -> 4 }T
+
+\ ---------- Lua-function out-arity registry ----------
+T{ s\" function pair(a, b)
+  return a, b
+end
+function use()
+  local x = pair(1, 2)
+  return x
+end" expect-error -> true }T
+T{ s\" function pair(a, b)
+  return a, b
+end
+function use()
+  local x, y = pair(1, 2)
+  return x + y
+end" run-generated use -> 3 }T
+
+\ ---------- host-eval smoke (flua-host) ----------
+T{ s" 40 2 +" host-eval -> 42 }T
+\ ошибка evaluate → host-trim-depth; стек до вызова не портится
+: host-err-ok? ( -- f )
+    depth { d0 }
+    s" -1 throw" host-eval
+    depth d0 = ;
+T{ host-err-ok? -> true }T
+\ host-stack-print (иначе 0% на defer target)
+T{ 7 8 host-stack-print -> 7 8 }T
+\ REPL chunk без TTY: compile → host-eval → показать out-cells
+: repl-smoke-ok? ( -- f )
+    s" 1+2" fl-compile-repl
+    emit-result host-eval
+    fl-repl-out-cells @ 1 <> if drop false exit then
+    depth 1 < if false exit then
+    3 = ;
+T{ repl-smoke-ok? -> true }T
 
 \ ---------- CLI: файл не найден ----------
 \ flua.src при заданном FLUA_ARG с несуществующим файлом:

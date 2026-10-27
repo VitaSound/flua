@@ -61,15 +61,30 @@ addrlist-new fl-forth-ul !
     dup allocate throw >r
     tuck r@ swap move r> swap ;
 
-\ forth-имя → lua-ключ: копия; '-', '.', '?' → '_'
+\ forth-имя → lua-ключ: '-', '.', '?', '/' → '_'; '@' → '_at' (удлинение)
 : fl-forth-to-lua ( a u -- na nu )
-    fl-copy-str { na nu }
-    na nu bounds ?do
-        i c@ dup [char] - = over [char] . = or
-        over [char] ? = or swap [char] / = or if
-            [char] _ i c!
+    { a u }
+    0 a u bounds ?do i c@ [char] @ = if 2 + then loop { extra }
+    u extra + allocate throw { na }
+    0 { di }
+    a u bounds ?do
+        i c@
+        dup [char] @ = if
+            drop
+            [char] _ na di + c!
+            [char] a na di 1 + + c!
+            [char] t na di 2 + + c!
+            di 3 + to di
+        else
+            dup [char] - = over [char] . = or
+            over [char] ? = or over [char] / = or if
+                drop [char] _
+            then
+            na di + c!
+            di 1 + to di
         then
-    loop na nu ;
+    loop
+    na di ;
 
 : fl-forth-find ( a u -- fi|0 )           \ поиск по lua-имени
     { a u }
@@ -87,6 +102,104 @@ addrlist-new fl-forth-ul !
     fna fi 2 cells + ! fnu fi 3 cells + !
     in-n fi 4 cells + ! out-n fi 5 cells + !
     fi fl-forth-ul @ addrlist-add ;
+
+\ ---- -- @require / -- @fpath (эмит в начале генерата) ----
+\ Запись: path-a, path-u (копия строки)
+variable fl-require-ul
+variable fl-fpath-ul
+addrlist-new fl-require-ul !
+addrlist-new fl-fpath-ul !
+
+: fl-path-free-one ( rec -- )
+    dup @ free throw
+    free throw ;
+
+: fl-require-reset ( -- )
+    ['] fl-path-free-one fl-require-ul @ addrlist-each
+    fl-require-ul @ addrlist-clear
+    ['] fl-path-free-one fl-fpath-ul @ addrlist-each
+    fl-fpath-ul @ addrlist-clear ;
+
+: fl-path-add ( a u ul -- )
+    { a u ul }
+    u allocate throw { na }
+    a na u move
+    2 cells allocate throw { rec }
+    na rec ! u rec cell+ !
+    rec ul addrlist-add ;
+
+: fl-require-add ( a u -- ) fl-require-ul @ fl-path-add ;
+: fl-fpath-add   ( a u -- ) fl-fpath-ul   @ fl-path-add ;
+
+\ ---- реестр Lua-function: name → out-arity ----
+\ Запись: name-a, name-u, out-n
+3 cells constant fl-fn-size
+variable fl-fn-ul
+addrlist-new fl-fn-ul !
+
+: fl-fn-free-one ( rec -- )
+    dup @ free throw
+    free throw ;
+
+: fl-fn-reset ( -- )
+    ['] fl-fn-free-one fl-fn-ul @ addrlist-each
+    fl-fn-ul @ addrlist-clear ;
+
+: fl-fn-find ( a u -- rec|0 )
+    { a u }
+    fl-fn-ul @ addrlist-len 0 ?do
+        i fl-fn-ul @ addrlist-nth-addr { rec }
+        rec @ rec cell+ @ a u compare 0= if rec unloop exit then
+    loop 0 ;
+
+: fl-fn-out@ ( rec -- n ) 2 cells + @ ;
+
+: fl-fn-add ( a u out-n -- )
+    { a u out-n }
+    a u fl-fn-find if
+        out-n swap 2 cells + ! exit
+    then
+    u allocate throw { na }
+    a na u move
+    fl-fn-size allocate throw { rec }
+    na rec ! u rec cell+ !
+    out-n rec 2 cells + !
+    rec fl-fn-ul @ addrlist-add ;
+
+\ ---- scope locals/params: name → ncells (внутри fl-gen-fn) ----
+\ Запись: name-a, name-u, ncells
+variable fl-scope-ul
+addrlist-new fl-scope-ul !
+
+: fl-scope-free-one ( rec -- )
+    dup @ free throw
+    free throw ;
+
+: fl-scope-reset ( -- )
+    ['] fl-scope-free-one fl-scope-ul @ addrlist-each
+    fl-scope-ul @ addrlist-clear ;
+
+: fl-scope-find-rec ( a u -- rec|0 )
+    { a u }
+    fl-scope-ul @ addrlist-len 0 ?do
+        i fl-scope-ul @ addrlist-nth-addr { rec }
+        rec @ rec cell+ @ a u compare 0= if rec unloop exit then
+    loop 0 ;
+
+: fl-scope-cells ( a u -- n|0 )           \ 0 = нет в scope
+    fl-scope-find-rec dup if 2 cells + @ else drop 0 then ;
+
+: fl-scope-set ( a u ncells -- )          \ создать или обновить
+    { a u ncells }
+    a u fl-scope-find-rec ?dup if
+        ncells swap 2 cells + ! exit
+    then
+    u allocate throw { na }
+    a na u move
+    3 cells allocate throw { rec }
+    na rec ! u rec cell+ !
+    ncells rec 2 cells + !
+    rec fl-scope-ul @ addrlist-add ;
 
 \ ---- глобалы VALUE / 2VALUE (таблица имён для файла / REPL) ----
 \ Запись: name-a, name-u, ncells (1|2), kind (0 scalar / 1 map / 2 list)
@@ -522,6 +635,9 @@ require ./flua-codegen.4th
     src-set emit-reset 0 fl-cdepth !
     fl-glob-reset                       \ новый файл/чанк — свои VALUE
     fl-forth-reset                      \ -- @forth imports на файл
+    fl-require-reset                    \ -- @require / -- @fpath
+    fl-fn-reset                         \ реестр Lua-function arity
+    fl-scope-reset
     -1 fl-expect-outs !
     fl-p-program
     fl-codegen ;
@@ -546,7 +662,8 @@ require ./flua-codegen.4th
     ."   flua repl          интерактивный цикл (Lua → Forth → gforth)" cr
     ."   flua help          эта справка" cr
     ."   flua version       версия" cr cr
-    ." Прагмы: -- @stack, -- @proc (0 out), -- @forth name ( in -- out )." cr
+    ." Прагмы: -- @stack, -- @proc (0 out), -- @forth name ( in -- out )," cr
+    ."   -- @require path, -- @fpath dir." cr
     ." Подмножество: function, local, multi-assign, if/while/repeat/for," cr
     ." целые, строки, + - * / %, not and or, .. (s+), вызовы слов." cr ;
 

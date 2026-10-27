@@ -209,10 +209,36 @@ variable ff-wa variable ff-wu
     until
     ff-na @ ff-nu @ ff-in @ ff-out @ fl-forth-add ;
 
+\ -- @require path  /  -- @fpath dir  (тело CM после «--»)
+: fl-require-parse-cm ( a u -- f )        \ true = обработано
+    ff-trim { a u }
+    u 8 < if false exit then
+    a 8 s" @require" compare 0= 0= if false exit then
+    a u 8 /string ff-trim
+    dup 0= if 2drop
+        cr ." flua: @require: missing path" cr -1 throw
+    then
+    fl-require-add true ;
+
+: fl-fpath-parse-cm ( a u -- f )
+    ff-trim { a u }
+    u 6 < if false exit then
+    a 6 s" @fpath" compare 0= 0= if false exit then
+    a u 6 /string ff-trim
+    dup 0= if 2drop
+        cr ." flua: @fpath: missing path" cr -1 throw
+    then
+    fl-fpath-add true ;
+
+: fl-pragma-parse-cm ( a u -- )
+    2dup fl-require-parse-cm if 2drop exit then
+    2dup fl-fpath-parse-cm   if 2drop exit then
+    fl-forth-parse-cm ;
+
 : fl-p-hdr-cm ( -- )
     tok-i @ fl-hdr-i0 !                 \ до серии CM (или пусто: i0 = i1)
     begin tok-t TK-CM = while
-        tok-text fl-forth-parse-cm
+        tok-text fl-pragma-parse-cm
         tok-next
     repeat
     tok-i @ fl-hdr-i1 ! ;

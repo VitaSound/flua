@@ -123,7 +123,7 @@ variable fl-for-vu
         s" then " emit-st
     then ;
 
-\ тип выражения: 0 неизвестен (параметр/вызов), 1 целое, 2 строка
+\ тип выражения: 0 неизвестен (вызов/чужой id), 1 целое, 2 строка
 : fl-expr-ncells ( m -- n )
     dup an-type an@ ANT-STR = if drop 2 exit then
     dup an-type an@ ANT-NUM = if drop 1 exit then
@@ -133,7 +133,14 @@ variable fl-for-vu
     then
     dup an-type an@ ANT-UN = if drop 1 exit then
     dup an-type an@ ANT-ID = if
-        an-text fl-glob-find-rec dup if 2 cells + @ else drop 0 then exit
+        an-text { a u }
+        a u fl-scope-find-rec ?dup if 2 cells + @ exit then
+        a u fl-glob-find-rec dup if 2 cells + @ else drop 0 then exit
+    then
+    dup an-type an@ ANT-CALL = if
+        an-text fl-fn-find dup if fl-fn-out@
+            dup 1 = over 2 = or if exit then drop 0 exit
+        then drop 0 exit
     then
     drop 0 ;
 
@@ -160,6 +167,12 @@ variable fl-for-vu
     dup 2 = if drop s" TM-STR " emit-st m fl-eval exit then
     dup 1 = if drop s" TM-INT " emit-st m fl-eval s" 0 " emit-st exit then
     drop
+    \ param без scope-типа → TM-INT (1 клетка; .. с param по-прежнему ok)
+    m an-type an@ ANT-ID = if
+        m an-text fl-param-idx 0< 0= if
+            s" TM-INT " emit-st m fl-eval s" 0 " emit-st exit
+        then
+    then
     cr ." flua: table value type unknown" cr -1 throw ;
 
 : fl-eval-table ( m -- )
@@ -351,16 +364,38 @@ create fl-emit-name-buf 128 allot
         i c@ [char] _ = if [char] - i c! then
     loop ;
 
-\ outs вызова: @forth | fl-expect-outs | 1
+\ outs вызова: @forth | Lua-fn registry | fl-expect-outs | 1
 : fl-call-resolve-out ( m -- n )
     { m }
     m an-text fl-forth-find ?dup if fi-out@ exit then
+    m an-text fl-fn-find ?dup if
+        fl-fn-out@ { outs }
+        fl-expect-outs @ dup 0< if drop outs exit then
+        outs <> if
+            cr ." flua: out-arity mismatch for " m an-text type
+            ." : expected " outs . ." got " fl-expect-outs @ . cr
+            -1 throw
+        then
+        outs exit
+    then
     fl-expect-outs @ dup 0< 0= if exit then
     drop 1 ;
 
-\ ncells аргумента для @forth: 0 (неизвестно) → 1
+\ ncells аргумента: 0 (неизвестно) → 1 (не @forth)
 : fl-expr-incells ( m -- n )
     fl-expr-ncells ?dup 0= if 1 then ;
+
+\ @forth: param → 1; известный тип → ncells; прочий ID с 0 → ошибка
+: fl-expr-forth-incells ( m -- n )
+    dup fl-expr-ncells ?dup if nip exit then
+    dup an-type an@ ANT-ID = if
+        dup an-text fl-param-idx 0< 0= if drop 1 exit then
+        an-text
+        cr ." flua: untyped arg '" type
+        ." ' (use literal, 2VALUE, or a, u)" cr
+        -1 throw
+    then
+    drop 1 ;
 
 : fl-args-incells ( args -- n )
     { args }
@@ -369,11 +404,20 @@ create fl-emit-name-buf 128 allot
         i args addrlist-nth-addr fl-expr-incells +
     loop ;
 
+: fl-args-forth-incells ( args -- n )
+    { args }
+    0
+    args addrlist-len 0 ?do
+        i args addrlist-nth-addr fl-expr-forth-incells +
+    loop ;
+
 : fl-call-check-in ( m fi -- )
     { m fi }
-    m an-aux an@ fl-args-incells fi fi-in@ <> if
+    m an-aux an@ fl-args-forth-incells fi fi-in@ <> if
         cr ." flua: @forth arity mismatch for " m an-text type
-        ." : expected " fi fi-in@ . ." cells" cr -1 throw
+        ." : expected " fi fi-in@ . ." cells"
+        ."  (string = 2 cells; use a, u or literal)" cr
+        -1 throw
     then ;
 
 \ вызов: аргументы → имя; outs из @forth / expect / 1
@@ -482,6 +526,16 @@ create fl-emit-name-buf 128 allot
     m an-aux an@ { ns }
     ns addrlist-len { n }
     m n fl-assign-index-check
+    \ обновить scope ncells до эмита (fl-expr-ncells смотрит scope)
+    n 1 = if
+        m an-l an@ fl-expr-ncells { nc }
+        nc 0= if 1 to nc then
+        0 ns addrlist-nth-addr an-text nc fl-scope-set
+    else
+        n 0 ?do
+            i ns addrlist-nth-addr an-text 1 fl-scope-set
+        loop
+    then
     fl-expect-outs @ >r
     n fl-expect-outs !
     emit-ind
@@ -805,6 +859,7 @@ defer fl-scan-arity-stmt
     fn an-flags an@ FN-STACK and 0<> stack-mode? !
     fn an-flags an@ FN-PROC  and 0<> proc-mode?  !
     proc-mode? @ if 0 else -1 then fl-out-arity !   \ -1 = ещё не видели return
+    fl-scope-reset
     addrlist-new fl-params-ul !
     fn an-aux an@ { params }
     params addrlist-len 0 ?do
@@ -827,6 +882,8 @@ defer fl-scan-arity-stmt
     fl-out-arity @ 0< if                \ не было return
         proc-mode? @ if 0 else 1 then fl-out-arity !
     then
+    \ реестр arity Lua-function (для вызовов ниже по файлу)
+    fl-fname-a @ fl-fname-u @ fl-out-arity @ fl-fn-add
     m-reset
     fl-params-ul @ addrlist-len 0 ?do i m-append loop
     stack-mode? @ if
@@ -868,6 +925,7 @@ defer fl-scan-arity-stmt
             -1 throw
         then
     then
+    fl-scope-reset
     fl-params-ul @ addrlist-dispose
     fl-locals-ul @ addrlist-dispose
     2r> proc-mode? ! stack-mode? ! ;
@@ -973,7 +1031,27 @@ defer fl-scan-arity-stmt
     m fl-repl-tag-expr
     m fl-eval emit-nl ;
 
+: fl-emit-one-fpath ( rec -- )
+    s" fpath path+ " emit-st
+    dup @ swap cell+ @ emit-st emit-nl ;
+
+: fl-emit-one-require ( rec -- )
+    s" require " emit-st
+    dup @ swap cell+ @ emit-st emit-nl ;
+
+\ addrlist-add — в голову; эмит в порядке объявления = с конца к началу
+: fl-emit-path-list ( ul xt -- )
+    { ul xt }
+    ul addrlist-len 0 ?do
+        ul addrlist-len 1- i - ul addrlist-nth-addr xt execute
+    loop ;
+
+: fl-emit-requires ( -- )
+    fl-fpath-ul   @ ['] fl-emit-one-fpath   fl-emit-path-list
+    fl-require-ul @ ['] fl-emit-one-require fl-emit-path-list ;
+
 : fl-codegen ( -- )
+    fl-emit-requires
     ['] fl-gen-item an-root @ addrlist-each ;
 
 [THEN]
