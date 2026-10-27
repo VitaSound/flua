@@ -90,6 +90,9 @@ s" repeat_until" golden-one
 s" proc_early"  golden-one
 s" forth_import" golden-one
 s" for_loop"    golden-one
+s" table_map"   golden-one
+s" table_list"  golden-one
+s" table_index_set" golden-one
 
 cr
 #ERRORS @ 0= [IF]

@@ -1,5 +1,5 @@
 -- @forth open-file ( c-addr u fam -- fileid ior )
--- @forth ulist-add ( addr list -- )
+-- @forth addrlist-add ( addr list -- )
 
 function load(a, u, fam)
   local fid, ior = open_file(a, u, fam)
@@ -9,5 +9,5 @@ end
 
 -- @proc
 function add_ptr(p, list)
-  ulist_add(p, list)
+  addrlist_add(p, list)
 end

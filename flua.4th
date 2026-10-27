@@ -13,14 +13,17 @@
 s" 0.1.0" 2constant flua-version
 
 \ ============================== fenum (контейнеры для структур) ==============================
-\ Параметры функции хранятся как структуры в ulist fenum:
+\ Параметры функции хранятся как структуры в addrlist fenum:
 \   [0] name-a  [1] name-u  [2] count  [3] used
-\ Кандидаты: forth-packages (после fmix packages.get) либо sibling-клон
-\ рядом с flua (~/fenum). Путь отсчитывается от файла flua.4th.
+\ Кандидаты: sibling ~/fenum (разработка) либо forth-packages после
+\ fmix packages.get. Путь отсчитывается от файла flua.4th.
 : fl-load-fenum ( -- )
-    s" forth-packages/fenum/0.1.2/fenum.4th"
+    s" ../fenum/fenum.4th"
     2dup file-status nip 0= if required exit then
-    2drop s" ../fenum/fenum-ulist-bs.4th" required ;
+    2drop
+    s" forth-packages/fenum/0.1.3/fenum.4th"
+    2dup file-status nip 0= if required exit then
+    2drop true abort" flua: fenum not found (need 0.1.3+)" ;
 
 fl-load-fenum
 
@@ -38,7 +41,7 @@ variable fl-expect-outs -1 fl-expect-outs ! \ ожидаемые outs вызов
 \ lua-имя: forth-имя с '-' → '_'; forth-имя — как в прагме.
 6 cells constant fi-size
 variable fl-forth-ul
-ulist-new fl-forth-ul !
+addrlist-new fl-forth-ul !
 
 : fi-lua ( fi -- a u ) dup @ swap cell+ @ ;
 : fi-forth ( fi -- a u ) 2 cells + dup @ swap cell+ @ ;
@@ -51,8 +54,8 @@ ulist-new fl-forth-ul !
     free throw ;
 
 : fl-forth-reset ( -- )
-    ['] fl-forth-free-one fl-forth-ul @ ulist-each
-    fl-forth-ul @ ulist-clear ;
+    ['] fl-forth-free-one fl-forth-ul @ addrlist-each
+    fl-forth-ul @ addrlist-clear ;
 
 : fl-copy-str ( a u -- na nu )
     dup allocate throw >r
@@ -62,15 +65,16 @@ ulist-new fl-forth-ul !
 : fl-forth-to-lua ( a u -- na nu )
     fl-copy-str { na nu }
     na nu bounds ?do
-        i c@ dup [char] - = over [char] . = or swap [char] ? = or if
+        i c@ dup [char] - = over [char] . = or
+        over [char] ? = or swap [char] / = or if
             [char] _ i c!
         then
     loop na nu ;
 
 : fl-forth-find ( a u -- fi|0 )           \ поиск по lua-имени
     { a u }
-    fl-forth-ul @ ulist-len 0 ?do
-        i fl-forth-ul @ ulist-nth-addr { fi }
+    fl-forth-ul @ addrlist-len 0 ?do
+        i fl-forth-ul @ addrlist-nth-addr { fi }
         fi fi-lua a u compare 0= if fi unloop exit then
     loop 0 ;
 
@@ -82,25 +86,28 @@ ulist-new fl-forth-ul !
     la fi ! lu fi cell+ !
     fna fi 2 cells + ! fnu fi 3 cells + !
     in-n fi 4 cells + ! out-n fi 5 cells + !
-    fi fl-forth-ul @ ulist-add ;
+    fi fl-forth-ul @ addrlist-add ;
 
 \ ---- глобалы VALUE / 2VALUE (таблица имён для файла / REPL) ----
-\ Запись: name-a, name-u, ncells (1 = VALUE, 2 = 2VALUE); имя — копия
-variable fl-globals                       \ ulist адресов записей
-ulist-new fl-globals !
+\ Запись: name-a, name-u, ncells (1|2), kind (0 scalar / 1 map / 2 list)
+0 constant FG-SCALAR
+1 constant FG-MAP
+2 constant FG-LIST
+variable fl-globals                       \ addrlist адресов записей
+addrlist-new fl-globals !
 
 : fl-glob-free-rec ( rec -- )             \ освободить копию имени + запись
     dup @ free throw
     free throw ;
 
 : fl-glob-reset ( -- )
-    ['] fl-glob-free-rec fl-globals @ ulist-each
-    fl-globals @ ulist-clear ;
+    ['] fl-glob-free-rec fl-globals @ addrlist-each
+    fl-globals @ addrlist-clear ;
 
 : fl-glob-find-rec ( a u -- rec|0 )
     { a u }
-    fl-globals @ ulist-len 0 ?do
-        i fl-globals @ ulist-nth-addr { rec }
+    fl-globals @ addrlist-len 0 ?do
+        i fl-globals @ addrlist-nth-addr { rec }
         rec @ rec cell+ @ a u compare 0= if rec unloop exit then
     loop 0 ;
 
@@ -109,16 +116,19 @@ ulist-new fl-globals !
 : fl-glob-cells ( a u -- n )              \ 1|2; неизвестное имя → 1
     fl-glob-find-rec dup if 2 cells + @ else drop 1 then ;
 
-: fl-glob-add ( a u ncells -- )           \ копия имени + размер (1|2)
-    >r                                   \ R: ncells
-    dup allocate throw                   \ ( a u na )
-    >r tuck r@ swap move                 \ ( u ) R: ncells na
-    r> swap                              \ ( na u ) R: ncells
-    3 cells allocate throw               \ ( na u rec )
-    tuck cell+ !                         \ rec.u
-    tuck !                               \ rec.a
-    r> over 2 cells + !                  \ rec.ncells
-    fl-globals @ ulist-add ;
+: fl-glob-kind ( a u -- k )               \ FG-*; неизвестное → SCALAR
+    fl-glob-find-rec dup if 3 cells + @ else drop FG-SCALAR then ;
+
+: fl-glob-add ( a u ncells kind -- )      \ копия имени + размер + kind
+    { a u ncells kind }
+    u allocate throw { na }
+    a na u move
+    4 cells allocate throw { rec }
+    na rec !
+    u rec cell+ !
+    ncells rec 2 cells + !
+    kind rec 3 cells + !
+    rec fl-globals @ addrlist-add ;
 
 \ ============================== буфер эмита ==============================
 
@@ -127,7 +137,8 @@ create emit-buf emit-capacity allot
 variable emit-pos
 variable fl-indent                          \ уровень отступа (тело fn / if / while)
 2 constant fl-indent-width                  \ пробелов на уровень
-variable fl-repl-out-cells                  \ тип top-level expr: 0/1/2 (для REPL)
+\ REPL out: 1 int | 2 str | 3 term | 4 term+flag | -1 map | -2 list | 0 → .s
+variable fl-repl-out-cells
 
 : emit-reset ( -- ) 0 emit-pos ! 0 fl-indent ! 0 fl-repl-out-cells ! ;
 : emit-ch ( c -- )
@@ -431,14 +442,14 @@ variable fl-params-ul                     \ ulist адресов парамет�
 
 \ эмит имён подряд с пробелами: "a b " (как давал старый plist)
 : fl-emit-one-name ( p -- ) param-name emit-st emit-bl ;
-: fl-emit-names ( -- ) ['] fl-emit-one-name fl-params-ul @ ulist-each ;
+: fl-emit-names ( -- ) ['] fl-emit-one-name fl-params-ul @ addrlist-each ;
 
 \ ---- подсчёт использований параметров: обход дерева (flua-codegen) ----
 variable fl-cn                              \ счётчик вхождений
 variable fl-nna variable fl-nnu             \ needle: имя параметра
 variable fl-if-n                            \ вложенность if..end (число then в кодогене)
 
-\ индекс параметра по имени в ulist-структуре ( -1 если нет )
+\ индекс параметра по имени в addrlist-структуре ( -1 если нет )
 variable pi-na  variable pi-nu  variable pi-idx  variable pi-hit
 
 : fl-pi-one ( p -- )
@@ -453,7 +464,7 @@ variable pi-na  variable pi-nu  variable pi-idx  variable pi-hit
 : fl-param-idx ( a u -- i | -1 )
     pi-nu ! pi-na !                       \ сначала верхний (u) в pi-nu
     0 pi-idx ! 0 pi-hit !
-    ['] fl-pi-one fl-params-ul @ ulist-each
+    ['] fl-pi-one fl-params-ul @ addrlist-each
     pi-hit @ if pi-idx @ else -1 then ;
 
 \ ============================== переменные кодогена ==============================
@@ -474,9 +485,9 @@ variable fl-li
 : fl-stack-leaf ( a u -- )
     fl-param-idx dup 0< if 2drop src-pos @ fl-syntax-error then
     fl-li !
-    fl-li @ fl-params-ul @ ulist-nth-addr param-used+!
-    fl-li @ fl-params-ul @ ulist-nth-addr param-count@
-    fl-li @ fl-params-ul @ ulist-nth-addr param-used@ = if
+    fl-li @ fl-params-ul @ addrlist-nth-addr param-used+!
+    fl-li @ fl-params-ul @ addrlist-nth-addr param-count@
+    fl-li @ fl-params-ul @ addrlist-nth-addr param-used@ = if
         fl-li @ fl-vs ! 1 fl-vsz !       \ последнее использование: подъём отложен
     else
         fl-li @ m-find                   \ ( slot )
@@ -584,7 +595,24 @@ variable fl-repl-u
 : fl-repl-clear-stack ( -- )
     depth 0 ?do drop loop ;
 
-\ печать результата top-level expr: целое / строка, иначе .s
+\ n клеток с TOS: печать снизу вверх, затем снять
+: fl-repl-print-n ( n -- )
+    dup depth > if drop exit then
+    { n }
+    n 0 ?do
+        n 1- i - pick 0 .r
+        i n 1- < if space then
+    loop
+    n 0 ?do drop loop
+    cr ;
+
+: fl-repl-print-handle ( tag-a tag-u -- )
+    depth 1 < if 2drop exit then
+    type
+    base @ >r hex 0 .r r> base !        \ 0 .r съедает handle
+    cr ;
+
+\ печать результата top-level expr
 : fl-repl-show ( -- )
     fl-repl-out-cells @ 2 = if
         depth 2 < if exit then type cr exit
@@ -592,6 +620,10 @@ variable fl-repl-u
     fl-repl-out-cells @ 1 = if
         depth 1 < if exit then 0 .r cr exit
     then
+    fl-repl-out-cells @ 3 = if 3 fl-repl-print-n exit then
+    fl-repl-out-cells @ 4 = if 4 fl-repl-print-n exit then
+    fl-repl-out-cells @ -1 = if s" map:" fl-repl-print-handle exit then
+    fl-repl-out-cells @ -2 = if s" list:" fl-repl-print-handle exit then
     depth 0> if .s cr then
     fl-repl-clear-stack ;
 

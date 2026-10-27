@@ -58,7 +58,7 @@ function clear(x)                          -- 0 out; пустой return → exi
 end
 ```
 
-- top-level: `function` | `name = expr` | expr | `print(...)`;
+- top-level: `function` | `local`/`name = expr` (→ VALUE) | expr | `print(...)`;
 - в функции: `local`/`assign`/`return`/`if`/`while`/`repeat`/`print(...)`
   (и др. call-stmt; stmt-списки в ветках);
 - `print(a, b)` → `0 .r` / `type` + `space` + `cr` (0 results);
@@ -72,20 +72,56 @@ end
 
 ```lua
 -- @forth open-file ( c-addr u fam -- fileid ior )
-local fid, ior = open_file(a, u, fam)   -- клетки, не «string object»
+-- @forth r/o ( -- fam )                  -- '/' → '_' → r_o()
+local fid, ior = open_file(path, r_o())   -- path-строка = 2 клетки + fam
 -- @forth fjson.str-concat ( a1 u1 a2 u2 -- a3 u3 )
-local a, u = fjson_str_concat(a1, u1, a2, u2)  -- '.'/'?' → '_' в Lua-имени
+local a, u = fjson_str_concat(a1, u1, a2, u2)  -- '.'/'?'/'/' → '_'
 abort("open")
 for i = 1, n do s = s + i end             -- → ?do / loop, индекс = i
+local m = { a = 1 }                       -- hashmap
+local xs = { 10, 20 }                     -- ulist
+local vt, v1, v2, ok = m.a                -- hashmap-get (не x = m.a)
+xs[0] = 99                                -- ulist-set-term
 ```
 
+### Host Forth (`-- @forth`, пакеты)
+
+- Билтины только `print` / `abort("…")`. Всё остальное (файлы, `type`,
+  `cr`, fjson, …) — слова host’а через `-- @forth name ( in -- out )`.
+- Arity **клеточная**: сумма `ncells` аргументов; строка = 2; `0`→1.
+- Имена: `-./?/` → `_`. Символ **`@` не мапится** → алиас в `.4th`.
+- `-- @forth` **не** делает `include`. Прагмы `-- @require` нет.
+  Пакет грузить host preamble’ом **перед** генератом:
+  `gforth examples/json_bridge.4th /tmp/out.4th -e bye`.
+- Примеры: `examples/read_file.lua`, `slurp_file.lua`, `parse_json.lua` +
+  `json_bridge.4th`. Полный текст — [README § Host Forth](README.md#host-forth).
 
 Нельзя:
 
 - `break`, `goto`, `nil`/`true`/`false` как литералы;
-- вложенные `function`; таблицы, методы, varargs, `--[[ ]]`;
+- вложенные `function`; методы, varargs, `--[[ ]]`;
 - `local`/assign/`for` внутри `-- @stack` функции;
-- RTTI / скрытая типизация строк (держите `a, u` явно).
+- RTTI / скрытая типизация строк (держите `a, u` явно);
+- смешанный литерал `{ 1, a = 2 }`;
+- `include`/`require` из `.lua` (только preamble);
+- single-assign от index-get: `x = m.a` → ошибка, нужен multi-assign.
+
+## Контейнеры → fenum
+
+| Lua | Forth (fenum) |
+|-----|----------------|
+| `{ a = 1, b = "x" }` / `{}` | `hashmap-new` + `TM-STR … hashmap-set` |
+| `{ 10, 20, 30 }` | `ulist-new` + `TM-INT … ulist-add` (add reverse — prepend) |
+| `{ 10, name = "x" }` | **ошибка** — смесь array+hash |
+| `t.a` / `t["k"]` | `hashmap-get` / `hashmap-set` |
+| `t[i]` | `ulist-nth-term` / `ulist-set-term` |
+
+- Чтение → multi-assign: `local vt, v1, v2, ok = m.a` (терм + flag).
+- Не угадывать тип значения на чтении.
+- Host: fenum 0.1.3+; dispose — явно.
+- Не плодить flua-алиасы над одним словом (урок пилота `json_has`).
+
+Подробные примеры эмита — [ROADMAP.md](ROADMAP.md).
 
 ## Частые ловушки ИИ
 
@@ -95,6 +131,12 @@ for i = 1, n do s = s + i end             -- → ?do / loop, индекс = i
 4. **`..` с целым-параметром** в `@stack` — desync (строка = 2 ячейки).
 5. **Unused param** в `@stack` — ошибка.
 6. **Проверяю только компиляцию** — всегда гоняйте `gforth -e 'include …'`.
+7. **Смешанный `{1, a=2}`** — ошибка; int `t[i]` = ulist, не hashmap.
+8. **`-- @forth` без `include` пакета** — Undefined word; нужен preamble.
+9. **Строковый `path` как Lua-param** + `@forth` на 3 клетки — arity miss;
+   литерал/`2VALUE` на call-site или явные `a, u`.
+10. **`print(addr, u)`** ≠ текст; для буфера — `@forth type`.
+11. **Слово с `@` в имени** — не импортируется в Lua; алиас в preamble.
 
 ## Как добавить тест под новую фичу
 
@@ -137,4 +179,6 @@ fmix check --stage pre-commit    # тесты + flint (0 дублей в про�
 - `tests/ast_test.4th` — тесты вывода AST (байт-в-байт + ошибки);
 - `tests/golden_test.4th` + `tests/golden/` — пары `.lua` ↔ эталоны,
   сравнение байт-в-байт + `evaluate`;
-- `README.md` — полное описание подмножества и режимов.
+- `README.md` — полное описание подмножества и режимов;
+- `ROADMAP.md` — статус, fsys, next (map/list → fenum);
+- `flua-host.4th` — `host-eval` / REPL (gforth).

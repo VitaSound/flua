@@ -2,6 +2,7 @@
 \
 \ Узел — запись из 7 ячеек (allocate), поля — смещения в ячейках:
 \   an-type — ANT-NUM | ANT-STR | ANT-ID | ANT-BIN | ANT-UN | ANT-CALL | ANT-FN
+\             | ANT-TABLE | ANT-INDEX | ANT-FIELD | …
 \   an-pa / an-pu — позиция и длина текста узла в исходнике (src)
 \   an-op — ANT-BIN: ASCII-код оператора; OP-CONCAT (256) — «..»
 \           ANT-UN: [char] - или OP-NOT (261)
@@ -44,6 +45,12 @@ require ./flua-tokens.4th
 12 constant ANT-WHILE                   \ while: cond an-l, body an-aux
 13 constant ANT-REPEAT                  \ repeat: body an-aux, cond an-l
 14 constant ANT-FOR                     \ for i=lo,hi: pa/pu=i, an-l=lo, an-r=hi, an-aux=body
+15 constant ANT-TABLE                   \ {…}: an-op=0 map / 1 list; an-aux=fields
+16 constant ANT-INDEX                   \ t[k] / t.a: an-l=container, an-r=key
+17 constant ANT-FIELD                   \ map-поле: pa/pu=ключ-id, an-l=value
+
+0 constant TABLE-MAP
+1 constant TABLE-LIST
 
 256 constant OP-CONCAT                   \ «..» — не ASCII-символ
 257 constant OP-LE                       \ «<=»
@@ -214,31 +221,31 @@ variable ff-wa variable ff-wu
 
 variable an-nodes                        \ реестр узлов текущего разбора
 variable an-root                         \ функции верхнего уровня
-ulist-new an-nodes !
-ulist-new an-root !
+addrlist-new an-nodes !
+addrlist-new an-root !
 
 : an@ ( m off -- n ) cells + @ ;
 : an! ( n m off -- ) cells + ! ;
 
 \ освободить узел: контейнер aux (аргументы/параметры) и сама запись
 : an-free-one ( m -- )
-    dup an-aux an@ ?dup if ulist-dispose then
+    dup an-aux an@ ?dup if addrlist-dispose then
     dup an-type an@ ANT-FN = if
-        dup an-l an@ ?dup if ulist-dispose then
+        dup an-l an@ ?dup if addrlist-dispose then
     then
     free throw ;
 
 \ освободить всё, что построено предыдущим разбором
 : an-reset ( -- )
-    ['] an-free-one an-nodes @ ulist-each
-    an-nodes @ ulist-clear
-    an-root @ ulist-clear ;
+    ['] an-free-one an-nodes @ addrlist-each
+    an-nodes @ addrlist-clear
+    an-root @ addrlist-clear ;
 
 \ type -- m: обнулённый узел, зарегистрированный в an-nodes
 : an-node ( type -- m )
     an-cells cells allocate throw         \ ( type addr )
     >r r@ an-cells cells erase r@ !       \ type → поле [0]
-    r@ an-nodes @ ulist-add
+    r@ an-nodes @ addrlist-add
     r> ;
 
 \ ---------------- конструкторы ----------------
@@ -301,7 +308,7 @@ ulist-new an-root !
 : an-assign ( names expr -- m )
     { names expr }
     ANT-ASSIGN an-node { m }
-    0 names ulist-nth-addr { id0 }
+    0 names addrlist-nth-addr { id0 }
     id0 an-pa an@ m an-pa an!
     id0 an-pu an@ m an-pu an!
     names m an-aux an!
@@ -310,7 +317,7 @@ ulist-new an-root !
 : an-local ( names expr -- m )
     { names expr }
     ANT-LOCAL an-node { m }
-    0 names ulist-nth-addr { id0 }
+    0 names addrlist-nth-addr { id0 }
     id0 an-pa an@ m an-pa an!
     id0 an-pu an@ m an-pu an!
     names m an-aux an!
@@ -337,6 +344,40 @@ ulist-new an-root !
     pa m an-pa an! pu m an-pu an!
     lo m an-l an! hi m an-r an!
     body m an-aux an! m ;
+
+: an-table ( kind fields -- m )
+    { kind fields }
+    ANT-TABLE an-node { m }
+    kind m an-op an!
+    fields m an-aux an!
+    m ;
+
+: an-index ( container key -- m )
+    { container key }
+    ANT-INDEX an-node { m }
+    container m an-l an!
+    key m an-r an!
+    m ;
+
+: an-field ( pa pu val -- m )
+    { pa pu val }
+    ANT-FIELD an-node { m }
+    pa m an-pa an!
+    pu m an-pu an!
+    val m an-l an!
+    m ;
+
+\ assign с LHS = индекс (an-aux=0, an-r=ANT-INDEX, an-l=expr)
+: an-idx-assign ( idx expr -- m )
+    { idx expr }
+    ANT-ASSIGN an-node { m }
+    0 m an-aux an!
+    idx m an-r an!
+    expr m an-l an!
+    idx an-l an@ { c }
+    c an-pa an@ m an-pa an!
+    c an-pu an@ m an-pu an!
+    m ;
 
 \ trim пробелов по краям (a u -- a' u')
 : fl-trim-lead ( a u -- a u )
@@ -394,14 +435,14 @@ defer fl-p-unary                         \ рекурсивное слово
 \ курсор на «(» после имени: ( pa pu -- m )
 : fl-p-call ( pa pu -- m )
     { pa pu }
-    ulist-new { args }
+    addrlist-new { args }
     tok-next                             \ съесть «(»
     [char] ) tok-op? if
         tok-next                         \ пустой список аргументов
     else
         begin
             fl-p-expr                    \ ( node )
-            args ulist-add               \ prepend → reverse ниже
+            args addrlist-add               \ prepend → reverse ниже
             [char] , tok-op? if
                 tok-next false
             else
@@ -411,7 +452,7 @@ defer fl-p-unary                         \ рекурсивное слово
         until
         tok-next                         \ съесть «)»
     then
-    args ulist-reverse                   \ порядок чтения аргументов
+    args addrlist-reverse                   \ порядок чтения аргументов
     pa pu args an-call ;
 
 \ курсор на значимом TK-ID: имя прочитано → идентификатор или вызов
@@ -421,15 +462,93 @@ defer fl-p-unary                         \ рекурсивное слово
     pa pu                             \ аргументы обоих исходов до ветвления
     [char] ( tok-op? if fl-p-call else an-id then ;
 
+\ postfix [expr] / .ID → ANT-INDEX (ключ-строка для .ID = ANT-STR по тексту id)
+: fl-p-postfix ( m -- m )
+    begin
+        tok-skip-cm
+        [char] [ tok-op? if
+            tok-next fl-p-expr
+            [char] ] tok-op? 0= if fl-p-error then
+            tok-next an-index
+            false
+        else
+            [char] . tok-op? if
+                tok-next
+                tok-skip-cm
+                tok-t TK-ID = 0= if fl-p-error then
+                tok-p tok-l an-str { key }
+                tok-next
+                key an-index
+                false
+            else
+                true
+            then
+        then
+    until ;
+
+\ id '=' на текущей позиции? (lookahead, курсор не двигаем)
+: fl-p-map-entry? ( -- f )
+    tok-skip-cm
+    tok-t TK-ID = 0= if false exit then
+    tok-i @ >r
+    tok-next
+    [char] = tok-op?
+    r> tok-i ! ;
+
+: fl-p-table ( -- m )
+    tok-next                             \ съесть «{»
+    addrlist-new { fields }
+    tok-skip-cm
+    [char] } tok-op? if                  \ {} → пустой map
+        tok-next
+        TABLE-MAP fields an-table exit
+    then
+    fl-p-map-entry? { is-map }
+    begin
+        tok-skip-cm
+        [char] } tok-op? if
+            tok-next true
+        else
+            is-map if
+                fl-p-map-entry? 0= if
+                    cr ." flua: mixed table literal" cr fl-p-error
+                then
+                tok-t TK-ID = 0= if fl-p-error then
+                tok-p tok-l { kpa kpu }
+                tok-next
+                [char] = tok-op? 0= if fl-p-error then
+                tok-next
+                kpa kpu fl-p-expr an-field fields addrlist-add
+            else
+                fl-p-map-entry? if
+                    cr ." flua: mixed table literal" cr fl-p-error
+                then
+                fl-p-expr fields addrlist-add
+            then
+            [char] , tok-op? if
+                tok-next
+                tok-skip-cm
+                [char] } tok-op? if tok-next true else false then
+            else
+                [char] } tok-op? 0= if fl-p-error then
+                tok-next true
+            then
+        then
+    until
+    fields addrlist-reverse
+    is-map if TABLE-MAP else TABLE-LIST then
+    fields an-table ;
+
 : fl-p-primary ( -- m )
     tok-skip-cm
-    tok-t TK-NUM = if tok-p tok-l an-num tok-next exit then
-    tok-t TK-STR = if tok-p tok-l an-str tok-next exit then
-    tok-t TK-ID  = if fl-p-name exit then
+    tok-t TK-NUM = if tok-p tok-l an-num tok-next fl-p-postfix exit then
+    tok-t TK-STR = if tok-p tok-l an-str tok-next fl-p-postfix exit then
+    tok-t TK-ID  = if fl-p-name fl-p-postfix exit then
+    [char] { tok-op? if fl-p-table fl-p-postfix exit then
     [char] ( tok-op? if                 \ группировка ( expr ): прозрачна
         tok-next fl-p-expr
         [char] ) tok-op? 0= if fl-p-error then
-        tok-next exit
+        tok-next fl-p-postfix exit
     then
     fl-p-error ;
 
@@ -555,31 +674,31 @@ defer fl-p-for
 \ return [expr (, expr)*]
 : fl-p-return ( -- m )
     tok-next                             \ съесть return
-    ulist-new { exprs }
+    addrlist-new { exprs }
     \ пустой return: следующий токен — конец stmt (end/elseif/else/function/…)
     s" end" tok-kw? s" elseif" tok-kw? or s" else" tok-kw? or
     s" until" tok-kw? or s" function" tok-kw? or tok-t TK-EOF = or if
         exprs an-ret exit
     then
-    fl-p-expr exprs ulist-add
+    fl-p-expr exprs addrlist-add
     begin
         [char] , tok-op? if
-            tok-next fl-p-expr exprs ulist-add false
+            tok-next fl-p-expr exprs addrlist-add false
         else true then
     until
-    exprs ulist-reverse exprs an-ret ;
+    exprs addrlist-reverse exprs an-ret ;
 
 \ ID (, ID)* — список имён (для local / multi-assign)
 : fl-p-name-list ( -- names )
-    ulist-new { names }
+    addrlist-new { names }
     begin
         tok-skip-cm
         tok-t TK-ID = 0= if fl-p-error then
-        tok-p tok-l an-id names ulist-add
+        tok-p tok-l an-id names addrlist-add
         tok-next
         [char] , tok-op? if tok-next false else true then
     until
-    names ulist-reverse names ;
+    names addrlist-reverse names ;
 
 \ local name [, name]* = expr
 : fl-p-local ( -- m )
@@ -610,6 +729,50 @@ defer fl-p-for
     [char] = tok-op?
     r> tok-i ! ;
 
+\ пропустить [ … ] на уровне токенов (для lookahead assign)
+: fl-p-skip-brackets ( -- f )
+    1 { depth }
+    begin
+        tok-t TK-EOF = if false exit then
+        [char] [ tok-op? if tok-next depth 1+ to depth false
+        else [char] ] tok-op? if
+            tok-next
+            depth 1- dup to depth
+            0= if true exit then
+            false
+        else tok-next false then then
+    until ;
+
+\ ID (.ID | […])+ '=' ? — индексный assign
+: fl-p-index-assign? ( -- f )
+    tok-skip-cm
+    tok-t TK-ID = 0= if false exit then
+    tok-i @ >r
+    tok-next
+    false { saw }
+    begin
+        [char] . tok-op? if
+            tok-next
+            tok-skip-cm
+            tok-t TK-ID = 0= if r> tok-i ! false exit then
+            tok-next true to saw false
+        else [char] [ tok-op? if
+            tok-next
+            fl-p-skip-brackets 0= if r> tok-i ! false exit then
+            true to saw false
+        else true then then
+    until
+    saw [char] = tok-op? and
+    r> tok-i ! ;
+
+: fl-p-index-assign ( -- m )
+    fl-p-name fl-p-postfix { idx }
+    idx an-type an@ ANT-INDEX <> if fl-p-error then
+    [char] = tok-op? 0= if fl-p-error then
+    tok-next
+    fl-p-expr
+    idx swap an-idx-assign ;
+
 \ ID '(' ? — вызов как statement (print и др.)
 : fl-p-id-call? ( -- f )
     tok-skip-cm
@@ -630,6 +793,7 @@ defer fl-p-for
     s" repeat" tok-kw? if fl-p-repeat exit then
     s" for" tok-kw? if fl-p-for exit then
     fl-p-id-assign? if fl-p-assign exit then
+    fl-p-index-assign? if fl-p-index-assign exit then
     fl-p-id-call? if fl-p-expr exit then
     fl-p-error ;
 
@@ -639,12 +803,12 @@ defer fl-p-for
 \ сдвигать курсор на true (ключевое слово остаётся)
 : fl-p-stmts-until ( xt -- stmts )
     { endxt }
-    ulist-new { stmts }
+    addrlist-new { stmts }
     begin
         endxt execute if
-            stmts ulist-reverse stmts exit
+            stmts addrlist-reverse stmts exit
         then
-        fl-p-stmt stmts ulist-add
+        fl-p-stmt stmts addrlist-add
         false
     until ;
 
@@ -658,25 +822,25 @@ defer fl-p-for
 \ курсор на «if»
 : fl-p-if-1 ( -- m )
     tok-next
-    ulist-new { branches }
+    addrlist-new { branches }
     fl-p-expr
     s" then" tok-kw? 0= if fl-p-error then
     tok-next
     ['] fl-p-end-if-branch? fl-p-stmts-until
-    an-br branches ulist-add
+    an-br branches addrlist-add
     begin
         s" elseif" tok-kw? if
             tok-next fl-p-expr
             s" then" tok-kw? 0= if fl-p-error then
             tok-next
             ['] fl-p-end-if-branch? fl-p-stmts-until
-            an-br branches ulist-add
+            an-br branches addrlist-add
             false
         else
             s" else" tok-kw? if
                 tok-next
                 ['] fl-p-end-if-branch? fl-p-stmts-until
-                0 swap an-br branches ulist-add
+                0 swap an-br branches addrlist-add
                 s" end" tok-kw? 0= if fl-p-error then
                 tok-next
                 true
@@ -687,7 +851,7 @@ defer fl-p-for
             then
         then
     until
-    branches ulist-reverse branches an-if ;
+    branches addrlist-reverse branches an-if ;
 ' fl-p-if-1 is fl-p-if
 
 : fl-p-while-1 ( -- m )
@@ -748,14 +912,14 @@ variable fl-p-params                      \ параметры текущей ф
     tok-next
     [char] ( tok-op? 0= if fl-p-error then
     tok-next                             \ съесть «(»
-    ulist-new fl-p-params !
+    addrlist-new fl-p-params !
     [char] ) tok-op? if
         tok-next                         \ () — параметров нет
     else
         begin
             tok-skip-cm
             tok-t TK-ID = 0= if fl-p-error then
-            tok-p tok-l an-id fl-p-params @ ulist-add
+            tok-p tok-l an-id fl-p-params @ addrlist-add
             tok-next
             [char] , tok-op? if
                 tok-next false
@@ -766,7 +930,7 @@ variable fl-p-params                      \ параметры текущей ф
         until
         tok-next                         \ съесть «)»
     then
-    fl-p-params @ ulist-reverse          \ ulist-add в голову → порядок чтения
+    fl-p-params @ addrlist-reverse          \ addrlist-add в голову → порядок чтения
     fl-p-body                            \ ( body ): return-expr или if
     s" end" tok-kw? 0= if fl-p-error then
     tok-next
@@ -780,10 +944,13 @@ variable fl-p-params                      \ параметры текущей ф
 
 \ ---------------- файл ----------------
 
-\ top-level item: function | assign | expr
+\ top-level item: function | local | assign | index-assign | expr
+\ (local на top-level → тот же узел ANT-LOCAL; codegen: VALUE, как assign)
 : fl-p-toplevel ( -- m )
     s" function" tok-kw? if fl-p-function exit then
+    s" local" tok-kw? if fl-p-local exit then
     fl-p-id-assign? if fl-p-assign exit then
+    fl-p-index-assign? if fl-p-index-assign exit then
     fl-p-expr ;
 
 : fl-p-program ( -- )
@@ -792,9 +959,9 @@ variable fl-p-params                      \ параметры текущей ф
     begin
         fl-p-hdr-cm
         tok-t TK-EOF = if
-            an-root @ ulist-reverse exit
+            an-root @ addrlist-reverse exit
         then
-        fl-p-toplevel an-root @ ulist-add
+        fl-p-toplevel an-root @ addrlist-add
         false
     until ;
 
@@ -812,9 +979,9 @@ defer an-print                           \ рекурсия; тело — an-pri
 \ параметры (id-узлы): «a, b»
 : an-params ( lst -- )
     { lst }
-    lst ulist-len 0 ?do
+    lst addrlist-len 0 ?do
         i 0> if s" , " emit-st then
-        i lst ulist-nth-addr an-text emit-st
+        i lst addrlist-nth-addr an-text emit-st
     loop ;
 
 : an-op-emit ( op -- )
@@ -847,8 +1014,8 @@ defer an-print                           \ рекурсия; тело — an-pri
         then
     then
     1 an-d +!
-    br an-aux an@ ulist-len 0 ?do
-        i br an-aux an@ ulist-nth-addr an-print
+    br an-aux an@ addrlist-len 0 ?do
+        i br an-aux an@ addrlist-nth-addr an-print
     loop
     -1 an-d +! ;
 
@@ -857,8 +1024,8 @@ defer an-print                           \ рекурсия; тело — an-pri
     { m }
     s" if" emit-st emit-nl
     m an-aux an@ { lst }
-    lst ulist-len 0 ?do
-        i lst ulist-nth-addr i an-branch-print
+    lst addrlist-len 0 ?do
+        i lst addrlist-nth-addr i an-branch-print
     loop ;
 
 \ узел → emit-buf: строка узла, затем дочерние на уровень глубже
@@ -887,8 +1054,8 @@ defer an-print                           \ рекурсия; тело — an-pri
         ANT-CALL of
             s" call " emit-st m an-text emit-st emit-nl
             1 an-d +!
-            m an-aux an@ ulist-len 0 ?do
-                i m an-aux an@ ulist-nth-addr an-print
+            m an-aux an@ addrlist-len 0 ?do
+                i m an-aux an@ addrlist-nth-addr an-print
             loop
             -1 an-d +!
         endof
@@ -898,8 +1065,8 @@ defer an-print                           \ рекурсия; тело — an-pri
             m an-aux an@ an-params
             [char] ) emit-ch emit-nl
             1 an-d +!
-            m an-l an@ ulist-len 0 ?do   \ тело: ulist stmt'ов
-                i m an-l an@ ulist-nth-addr an-print
+            m an-l an@ addrlist-len 0 ?do   \ тело: ulist stmt'ов
+                i m an-l an@ addrlist-nth-addr an-print
             loop
             -1 an-d +!
         endof
@@ -908,22 +1075,30 @@ defer an-print                           \ рекурсия; тело — an-pri
             an-indent s" end" emit-st emit-nl
         endof
         ANT-RET of
-            m an-aux an@ ulist-len 1 = if
+            m an-aux an@ addrlist-len 1 = if
                 \ одна expr — печатаем её на месте (откат ложного отступа строки ret)
                 an-d @ 2* negate emit-pos +!
-                0 m an-aux an@ ulist-nth-addr an-print
+                0 m an-aux an@ addrlist-nth-addr an-print
             else
                 s" ret" emit-st emit-nl
                 1 an-d +!
-                m an-aux an@ ulist-len 0 ?do
-                    i m an-aux an@ ulist-nth-addr an-print
+                m an-aux an@ addrlist-len 0 ?do
+                    i m an-aux an@ addrlist-nth-addr an-print
                 loop
                 -1 an-d +!
             then
         endof
         ANT-ASSIGN of
-            s" assign " emit-st m an-text emit-st emit-nl
-            1 an-d +! m an-l an@ an-print -1 an-d +!
+            m an-aux an@ 0= if
+                s" idx-assign" emit-st emit-nl
+                1 an-d +!
+                m an-r an@ an-print
+                m an-l an@ an-print
+                -1 an-d +!
+            else
+                s" assign " emit-st m an-text emit-st emit-nl
+                1 an-d +! m an-l an@ an-print -1 an-d +!
+            then
         endof
         ANT-LOCAL of
             s" local " emit-st m an-text emit-st emit-nl
@@ -933,17 +1108,50 @@ defer an-print                           \ рекурсия; тело — an-pri
             s" while" emit-st emit-nl
             1 an-d +!
             m an-l an@ an-print
-            m an-aux an@ ulist-len 0 ?do
-                i m an-aux an@ ulist-nth-addr an-print
+            m an-aux an@ addrlist-len 0 ?do
+                i m an-aux an@ addrlist-nth-addr an-print
             loop
             -1 an-d +!
         endof
         ANT-REPEAT of
             s" repeat" emit-st emit-nl
             1 an-d +!
-            m an-aux an@ ulist-len 0 ?do
-                i m an-aux an@ ulist-nth-addr an-print
+            m an-aux an@ addrlist-len 0 ?do
+                i m an-aux an@ addrlist-nth-addr an-print
             loop
+            m an-l an@ an-print
+            -1 an-d +!
+        endof
+        ANT-FOR of
+            s" for " emit-st m an-text emit-st emit-nl
+            1 an-d +!
+            m an-l an@ an-print
+            m an-r an@ an-print
+            m an-aux an@ addrlist-len 0 ?do
+                i m an-aux an@ addrlist-nth-addr an-print
+            loop
+            -1 an-d +!
+        endof
+        ANT-TABLE of
+            s" table " emit-st
+            m an-op an@ TABLE-MAP = if s" map" else s" list" then emit-st
+            emit-nl
+            1 an-d +!
+            m an-aux an@ addrlist-len 0 ?do
+                i m an-aux an@ addrlist-nth-addr an-print
+            loop
+            -1 an-d +!
+        endof
+        ANT-INDEX of
+            s" index" emit-st emit-nl
+            1 an-d +!
+            m an-l an@ an-print
+            m an-r an@ an-print
+            -1 an-d +!
+        endof
+        ANT-FIELD of
+            s" field " emit-st m an-text emit-st emit-nl
+            1 an-d +!
             m an-l an@ an-print
             -1 an-d +!
         endof
@@ -959,6 +1167,6 @@ defer an-print                           \ рекурсия; тело — an-pri
     src-set emit-reset
     fl-p-program
     0 an-d !
-    ['] an-print an-root @ ulist-each ;
+    ['] an-print an-root @ addrlist-each ;
 
 [THEN]

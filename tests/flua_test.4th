@@ -407,6 +407,36 @@ function f(x)
   return y
 end"
    s\" twice" has-output? -> true }T
+\ клеточная arity: строковый литерал = 2 клетки; r/o → r_o
+T{ s\" -- @forth open-file ( c-addr u fam -- fileid ior )
+-- @forth r/o ( -- fam )
+function load()
+  local fam = r_o()
+  local fid, ior = open_file(\"x.txt\", fam)
+  return fid, ior
+end"
+   s\" open-file" has-output? -> true }T
+T{ s\" -- @forth open-file ( c-addr u fam -- fileid ior )
+-- @forth r/o ( -- fam )
+function load()
+  local fam = r_o()
+  local fid, ior = open_file(\"x.txt\", fam)
+  return fid, ior
+end"
+   s\" r/o" has-output? -> true }T
+\ раздельные a,u по-прежнему ок (1+1+1)
+T{ s\" -- @forth open-file ( c-addr u fam -- fileid ior )
+function load(a, u, fam)
+  local fid, ior = open_file(a, u, fam)
+  return fid
+end"
+   s\" open-file" has-output? -> true }T
+\ 1-cell + 1-cell к 3-cell open-file → mismatch
+T{ s\" -- @forth open-file ( c-addr u fam -- fileid ior )
+function bad(n, fam)
+  local fid, ior = open_file(n, fam)
+  return fid
+end" expect-error -> true }T
 T{ s\" function sum_to(n)
   local s = 0
   for i = 1, n do
@@ -419,6 +449,44 @@ function boom()
   abort(\"x\")
 end"
    s\" abort\" x\"" has-output? -> true }T
+\ single-assign от index-get запрещён
+T{ s\" function f()
+  local m = { a = 1 }
+  local x = m.a
+  return x
+end" expect-error -> true }T
+
+\ ---------- table literals / index ----------
+T{ s\" local m = { a = 1 }" s" VALUE m" has-output? -> true }T
+T{ s\" local m = { a = 1 }" s" local " lacks-output? -> true }T
+T{ s\" function f() local m = { a = 1 } return m end"
+   s" hashmap-new" has-output? -> true }T
+T{ s\" function f() local xs = { 10, 20 } return xs end"
+   s" ulist-new" has-output? -> true }T
+T{ s\" function f()
+  local m = { a = 1 }
+  local vt, v1, v2, fl = m.a
+  return v1
+end" run-generated f -> 1 }T
+T{ s\" function f()
+  local xs = { 10, 20, 30 }
+  local t, a, z = xs[0]
+  return a
+end" run-generated f -> 10 }T
+T{ s\" function f() local bad = { 1, a = 2 } return bad end"
+   expect-error -> true }T
+T{ s\" function f()
+  local m = {}
+  m.k = 4
+  local vt, v, x, fl = m.k
+  return v
+end" run-generated f -> 4 }T
+\ top-level multi-assign (REPL): emit содержит to …
+T{ s\" function wrap()
+  local m = { a = 1 }
+  local vt, v1, v2, fl = m.a
+  return vt, v1, fl
+end" run-generated wrap -> 1 1 -1 }T
 
 \ ---------- CLI: файл не найден ----------
 \ flua.src при заданном FLUA_ARG с несуществующим файлом:

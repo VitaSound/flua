@@ -3,10 +3,12 @@
 Transpiles a simple Lua subset to Gforth-compatible Forth source.
 **Реализация — только Forth (Gforth), без Python и внешних зависимостей.**
 
+Статус и next (контейнеры → fenum): [ROADMAP.md](ROADMAP.md).
+Шпаргалка для агента: [AGENTS.md](AGENTS.md).
+
 ## Supported Lua subset
 
-См. также шпаргалку в [AGENTS.md](AGENTS.md). Критерий фичи: эмит —
-**типичный Gforth**, не Lua-VM.
+Критерий фичи: эмит — **типичный Gforth**, не Lua-VM.
 
 - **Function definitions**: `function name(a, b, ...) … end`
 - **Прагмы** перед `function`: `-- @stack` (стек без locals), `-- @proc`
@@ -30,15 +32,21 @@ Transpiles a simple Lua subset to Gforth-compatible Forth source.
 - **Top-level**: `function` | assign | expr | `print`
 - **Комментарии**: `--` до конца строки; блок перед `function` → `\ …`
 
-- **`-- @forth name ( in-cells -- out-cells )`**: импорт внешнего слова с
-  клеточной arity; Lua-имя с `_` ↔ Forth-имя с `-`; multi-assign
-  `local a, b = word(...)` стыкует outs
+- **`-- @forth`**: импорт уже существующего слова Gforth/пакета — см. раздел
+  [Host Forth](#host-forth) ниже
 - **`for i = lo, hi do … end`**: → `hi 1+ lo ?do … loop` (индекс = Forth `i`)
 - **`abort("msg")`**: builtin → `true abort" msg"`
+- **Таблицы → fenum**: `{ k = v }` → `hashmap-*`; `{ v1, v2 }` → `ulist-*`;
+  `{}` → пустой map; смесь array+hash — ошибка. Доступ: `t.a` / `t["k"]` →
+  `hashmap-get`/`hashmap-set` (терм + flag); `t[i]` → `ulist-nth-term` /
+  `ulist-set-term`. Чтение — multi-assign (`local vt, v1, v2, ok = m.a`);
+  **не** `x = m.a` (ошибка: нужен multi-assign). Host: fenum 0.1.3+.
 
-**Чего нет:** `break`, `goto`, `nil`/`true`/`false` как литералы;
-вложенные `function`; таблицы; varargs; `--[[ ]]`; `local`/assign/`for` в
-`-- @stack`. Не Lua-VM / RTTI — генерат должен читаться как типичный Gforth.
+**Чего нет (сейчас в codegen):** `break`, `goto`, `nil`/`true`/`false` как
+литералы; вложенные `function`; varargs; `--[[ ]]`;
+`local`/assign/`for` в `-- @stack`; **`-- @require` / `include` из `.lua`**
+(библиотеки грузит host preamble — см. ниже). Не Lua-VM / RTTI — генерат
+должен читаться как типичный Gforth. Int-ключ в `t[i]` = только ulist.
 
 ## Output shape
 
@@ -102,6 +110,92 @@ flua version      # версия
 
 Прагмы перед `function`: `-- @stack` (стековая эмиссия без locals),
 `-- @proc` (слово без возвращаемых значений). CLI `--stack` удалён.
+
+## Host Forth
+
+flua — **транспилятор**, не Lua-рантайм. Почти весь I/O и библиотеки —
+это обычные слова Gforth (или пакетов вроде fjson/fenum). Их не нужно
+«добавлять в язык»: достаточно объявить сигнатуру и вызвать.
+
+### Билтины flua vs импорт
+
+| Имя в Lua | Откуда | Нужен `-- @forth`? |
+|-----------|--------|-------------------|
+| `print(...)` | codegen → `0 .r` / `type` + `cr` | нет |
+| `abort("msg")` | codegen → `true abort" msg"` | нет |
+| `open_file`, `type`, `cr`, `allocate`, `r_o`, `fjson_parse`, … | слово host’а | **да** |
+
+Каталога «всех» Forth-слов во flua **нет**: сигнатуры берите из man Gforth /
+документации пакета (ANS File-Access, Memory-Allocation, [fjson API](https://github.com/VitaSound/fjson)).
+
+### Прагма `-- @forth`
+
+```lua
+-- @forth open-file ( c-addr u fam -- fileid ior )
+-- @forth r/o ( -- fam )
+local fid, ior = open_file("x.txt", r_o())
+```
+
+- Это **не** обычный комментарий: парсер регистрирует импорт.
+- В генерате будет вызов Forth-слова `open-file` / `r/o`.
+- **Клеточная arity**: сумма клеток аргументов = `in` в `( in -- out )`.
+  Строка (литерал или `2VALUE`) = **2** клетки → один Lua-аргумент-строка
+  закрывает два слота. Неизвестное (`ncells=0`) считается как 1.
+- Lua-имя: `-` `.` `?` `/` → `_` (`open-file`→`open_file`, `r/o`→`r_o`).
+  Символ **`@` в имени не мапится** — нельзя написать `fjson_node_str@` в Lua;
+  сделайте алиас в Forth (`: fjson-node-str … fjson.node-str@ ;`) и импортируйте его.
+- `out` стыкуется multi-assign: `local a, b = word(...)`.
+- `-- @forth` **не загружает** файл: только имя + arity. Если слова ещё нет
+  в словаре host’а → `Undefined word` при `include` генерата.
+
+### Как подключить пакет (`include` / `require`)
+
+Сейчас из `.lua` **нельзя** эмитить `include`. Паттерн:
+
+1. `.lua` — логика + `-- @forth …`
+2. короткий host preamble `.4th` — `include`/`fpath` библиотек (+ алиасы)
+3. запуск: preamble **перед** генератом
+
+```bash
+flua examples/parse_json.lua > /tmp/parse_json.4th
+gforth examples/json_bridge.4th /tmp/parse_json.4th -e bye
+```
+
+`json_bridge.4th` подтягивает fenum + fjson и объявляет `fjson-node-str` /
+`fjson-node-num`. Пути в preamble — **от каталога этого `.4th`** (gforth
+при `include` файла меняет относительную базу).
+
+Для файлов без внешних пакетов preamble не нужен — хватает слов ядра Gforth
+(после transpile):
+
+```bash
+flua examples/read_file.lua > /tmp/read_file.4th
+gforth -e 'include /tmp/read_file.4th bye'   # из корня репо (путь к data.txt)
+```
+
+### Примеры
+
+| Файл | Что показывает |
+|------|----------------|
+| [`examples/read_file.lua`](examples/read_file.lua) | `r/o`, `open-file`, `allocate`, `read-file`, `type`, `cr` |
+| [`examples/slurp_file.lua`](examples/slurp_file.lua) | `slurp-file` |
+| [`examples/data.txt`](examples/data.txt) | фикстура для чтения |
+| [`examples/json_bridge.4th`](examples/json_bridge.4th) | host `include` fjson + алиасы без `@` |
+| [`examples/parse_json.lua`](examples/parse_json.lua) | `fjson.parse` → поля → Lua `{}` (fenum hashmap) |
+
+Замечание: `fjson.parse` даёт **дерево нод**, не hashmap. В map кладёте
+поля сами (`hashmap-set` / присваивания). Обратное (map→JSON) — `fjson.emit-mmap`.
+
+### Ловушки
+
+- Параметр Lua-функции = **1** клетка locals. Строковый путь как один
+  `function f(path)` + внутри `open_file(path, fam)` **не** сработает по
+  arity (path локаль неизвестна → 1 клетка). Передавайте литерал/`2VALUE`
+  на call-site `@forth` или явные `a, u`.
+- `print(buf, got)` для буфера `(addr u)` печатает два целых; для текста —
+  `@forth type` / `cr`.
+- Имена функций с `_`: define оставляет `_`, вызов эмитит `-` — лучше
+  без underscore в имени `function` или зовите из Forth по фактическому имени.
 
 ## Режим `-- @stack` (на функцию)
 
@@ -261,6 +355,9 @@ fn add(a, b)
 ├── flua-tokens.4th         — токенизатор (фаза 1 конвейера)
 ├── flua-ast.4th            — AST: парсер поверх токенов + печать дерева (--ast)
 ├── flua-codegen.4th        — кодогенерация: обход дерева → Forth-код
+├── flua-host.4th           — host-eval / REPL (gforth)
+├── examples/               — файлы, fjson bridge (см. Host Forth)
+├── ROADMAP.md              — статус, fsys, next (контейнеры → fenum)
 ├── tests/
 │   ├── flua_test.4th       — юнит-тесты на ttester
 │   ├── golden_test.4th     — golden-тесты (исходник ↔ эталон, байт-в-байт)

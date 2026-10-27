@@ -53,8 +53,8 @@ defer fl-eval                          \ рекурсивное слово; те
     { m }
     [char] s emit-ch [char] \ emit-ch [char] " emit-ch emit-bl
     m an-text { a u }
-    u 2 >= if                          \ снять краевые кавычки (" или ')
-        a 1 + to a  u 2 - to u
+    u 2 >= a c@ [char] " = a c@ [char] ' = or and if
+        a 1 + to a  u 2 - to u         \ снять краевые кавычки (" или ')
     then
     begin u 0 > while
         a c@ [char] \ = u 1 > and if      \ «\X» → «\X» (n/t/\/" — как есть)
@@ -127,6 +127,7 @@ variable fl-for-vu
 : fl-expr-ncells ( m -- n )
     dup an-type an@ ANT-STR = if drop 2 exit then
     dup an-type an@ ANT-NUM = if drop 1 exit then
+    dup an-type an@ ANT-TABLE = if drop 1 exit then
     dup an-type an@ ANT-BIN = if
         an-op an@ OP-CONCAT = if 2 else 1 then exit
     then
@@ -135,6 +136,118 @@ variable fl-for-vu
         an-text fl-glob-find-rec dup if 2 cells + @ else drop 0 then exit
     then
     drop 0 ;
+
+\ a u → s\" …" (идентификаторы / голый текст без кавычек в src)
+: fl-emit-bare-str ( a u -- )
+    [char] s emit-ch [char] \ emit-ch [char] " emit-ch emit-bl
+    bounds ?do
+        i c@ dup [char] " = over [char] \ = or if
+            [char] \ emit-ch
+        then emit-ch
+    loop
+    [char] " emit-ch emit-bl ;
+
+\ значение → терм TM-* + клетки на стеке (для set/add)
+: fl-emit-term-val ( m -- )
+    { m }
+    m an-type an@ ANT-TABLE = if
+        m an-op an@ TABLE-MAP = if s" TM-MAP " else s" TM-LST " then emit-st
+        m fl-eval
+        s" 0 " emit-st
+        exit
+    then
+    m fl-expr-ncells
+    dup 2 = if drop s" TM-STR " emit-st m fl-eval exit then
+    dup 1 = if drop s" TM-INT " emit-st m fl-eval s" 0 " emit-st exit then
+    drop
+    cr ." flua: table value type unknown" cr -1 throw ;
+
+: fl-eval-table ( m -- )
+    { m }
+    m an-op an@ TABLE-MAP = if
+        s" hashmap-new >r " emit-st
+        m an-aux an@ { fs }
+        fs addrlist-len 0 ?do
+            emit-nl emit-ind
+            i fs addrlist-nth-addr { f }
+            s" TM-STR " emit-st
+            f an-text fl-emit-bare-str
+            f an-l an@ fl-emit-term-val
+            s" r@ hashmap-set " emit-st
+        loop
+        emit-nl emit-ind s" r> " emit-st
+    else
+        s" ulist-new >r " emit-st
+        m an-aux an@ { fs }
+        fs addrlist-len 0 ?do
+            emit-nl emit-ind
+            fs addrlist-len 1- i - fs addrlist-nth-addr fl-emit-term-val
+            s" r@ ulist-add " emit-st
+        loop
+        emit-nl emit-ind s" r> " emit-st
+    then
+    1 m-push-res ;
+
+\ t[k] / t.a → hashmap-get (4) или ulist-nth-term (3)
+\ k — выражение: str (2 cells) → map, int (1) → list.
+\ m[a] ≠ m["a"]: нужен типизированный a (VALUE/local), иначе ошибка.
+: fl-eval-index ( m -- )
+    { m }
+    m an-r an@ { key }
+    m an-l an@ { cont }
+    key fl-expr-ncells { kn }
+    kn 2 = if
+        s" TM-STR " emit-st
+        key fl-eval
+        cont fl-eval
+        s" hashmap-get " emit-st
+        3 m-popn
+        4 0 ?do 1 m-push-res loop
+    else
+        kn 1 = if
+            key fl-eval
+            cont fl-eval
+            s" ulist-nth-term " emit-st
+            2 m-popn
+            3 0 ?do 1 m-push-res loop
+        else
+            cr ." flua: index key needs typed value (m.a / string literal / int var)" cr
+            -1 throw
+        then
+    then ;
+
+: fl-gen-idx-assign ( m -- )
+    { m }
+    stack-mode? @ if
+        cr ." flua: locals/assign not supported in -- @stack function" cr
+        -1 throw
+    then
+    m an-r an@ { idx }
+    m an-l an@ { val }
+    idx an-r an@ { key }
+    idx an-l an@ { cont }
+    emit-ind
+    key fl-expr-ncells { kn }
+    kn 2 = if
+        s" TM-STR " emit-st
+        key fl-eval
+        val fl-emit-term-val
+        cont fl-eval
+        s" hashmap-set " emit-st
+        val fl-expr-ncells 2 + 1 + m-popn
+    else
+        kn 1 = if
+            key fl-eval
+            val fl-emit-term-val
+            cont fl-eval
+            s" ulist-set-term " emit-st
+            val fl-expr-ncells 1 + 1 + m-popn
+        else
+            cr ." flua: index key needs typed value (m.a / string literal / int var)" cr
+            -1 throw
+        then
+    then
+    emit-nl ;
 
 : fl-arg-is-str? ( m -- f ) fl-expr-ncells 2 = ;
 
@@ -194,8 +307,8 @@ variable fl-for-vu
 : fl-eval-print ( m -- )
     { m }
     m an-aux an@ { args }
-    args ulist-len 0 ?do
-        i args ulist-nth-addr { arg }
+    args addrlist-len 0 ?do
+        i args addrlist-nth-addr { arg }
         arg fl-eval
         stack-mode? @ if
             fl-vs @ m-find fl-vsz @ 0 fl-o!
@@ -207,7 +320,7 @@ variable fl-for-vu
             s" 0 .r " emit-st            \ без хвостового пробела (в отличие от .)
         then
         stack-mode? @ if fl-vsz @ m-popn else 1 m-popn then
-        i 1+ args ulist-len < if s" space " emit-st then
+        i 1+ args addrlist-len < if s" space " emit-st then
     loop
     s" cr " emit-st ;
 
@@ -215,10 +328,10 @@ variable fl-for-vu
 : fl-eval-abort ( m -- )
     { m }
     m an-aux an@ { args }
-    args ulist-len 1 <> if
+    args addrlist-len 1 <> if
         cr ." flua: abort expects one string argument" cr -1 throw
     then
-    0 args ulist-nth-addr { arg }
+    0 args addrlist-nth-addr { arg }
     arg an-type an@ ANT-STR <> if
         cr ." flua: abort expects a string literal" cr -1 throw
     then
@@ -245,11 +358,22 @@ create fl-emit-name-buf 128 allot
     fl-expect-outs @ dup 0< 0= if exit then
     drop 1 ;
 
+\ ncells аргумента для @forth: 0 (неизвестно) → 1
+: fl-expr-incells ( m -- n )
+    fl-expr-ncells ?dup 0= if 1 then ;
+
+: fl-args-incells ( args -- n )
+    { args }
+    0
+    args addrlist-len 0 ?do
+        i args addrlist-nth-addr fl-expr-incells +
+    loop ;
+
 : fl-call-check-in ( m fi -- )
     { m fi }
-    m an-aux an@ ulist-len fi fi-in@ <> if
+    m an-aux an@ fl-args-incells fi fi-in@ <> if
         cr ." flua: @forth arity mismatch for " m an-text type
-        ." : expected " fi fi-in@ . ." args" cr -1 throw
+        ." : expected " fi fi-in@ . ." cells" cr -1 throw
     then ;
 
 \ вызов: аргументы → имя; outs из @forth / expect / 1
@@ -271,8 +395,9 @@ create fl-emit-name-buf 128 allot
     0 fl-karg !
     fl-cdepth @ 8 * fl-cbase ! 1 fl-cdepth +!
     m an-aux an@ { args }
-    args ulist-len 0 ?do
-        i args ulist-nth-addr fl-eval
+    args fl-args-incells { incells }
+    args addrlist-len 0 ?do
+        i args addrlist-nth-addr fl-eval
         stack-mode? @ if
             fl-vs @ fl-vsz @ fl-cbase @ fl-karg @ + fl-as!
         then
@@ -291,18 +416,20 @@ create fl-emit-name-buf 128 allot
     else
         m an-text fl-lua-to-forth-name emit-st emit-bl
     then
-    fl-karg @ m-popn
+    incells m-popn
     outs 0 ?do 1 m-push-res loop ;
 
 : fl-eval-1 ( m -- )
     { m }
     m an-type an@ case
-        ANT-NUM  of m fl-eval-num  endof
-        ANT-STR  of m fl-eval-str  endof
-        ANT-ID   of m fl-eval-id   endof
-        ANT-BIN  of m fl-eval-bin  endof
-        ANT-UN   of m fl-eval-un   endof
-        ANT-CALL of m fl-eval-call endof
+        ANT-NUM   of m fl-eval-num   endof
+        ANT-STR   of m fl-eval-str   endof
+        ANT-ID    of m fl-eval-id    endof
+        ANT-BIN   of m fl-eval-bin   endof
+        ANT-UN    of m fl-eval-un    endof
+        ANT-CALL  of m fl-eval-call  endof
+        ANT-TABLE of m fl-eval-table endof
+        ANT-INDEX of m fl-eval-index endof
         true abort" flua: internal codegen error: not an expression"
     endcase ;
 
@@ -313,38 +440,48 @@ create fl-emit-name-buf 128 allot
 : fl-gen-ret ( m early? -- )
     { m early? }
     m an-aux an@ { exprs }
-    exprs ulist-len 0= if                 \ пустой return
+    exprs addrlist-len 0= if                 \ пустой return
         proc-mode? @ 0= if
             cr ." flua: empty return only allowed in -- @proc" cr -1 throw
         then
         early? if emit-ind s" exit " emit-st emit-nl then exit
     then
     emit-ind
-    exprs ulist-len 0 ?do
-        i exprs ulist-nth-addr fl-eval
+    exprs addrlist-len 0 ?do
+        i exprs addrlist-nth-addr fl-eval
         stack-mode? @ if
             fl-vs @ m-find fl-vsz @ i fl-o!
         then
     loop
     stack-mode? @ if
-        exprs ulist-len fl-on !
+        exprs addrlist-len fl-on !
         fl-arrange
         early? if
-            m-len @ exprs ulist-len - 0 max 0 ?do s" nip " emit-st loop
+            m-len @ exprs addrlist-len - 0 max 0 ?do s" nip " emit-st loop
         then
     then
     early? if s" exit " emit-st then
     emit-nl ;
 
 \ ---- assign / local → expr to name[s] (стек: last name на TOS) ----
+: fl-assign-index-check ( m n -- )        \ single ← index-get запрещён
+    { m n }
+    n 1 = m an-l an@ an-type an@ ANT-INDEX = and if
+        cr ." flua: index get needs multi-assign" cr -1 throw
+    then ;
+
 : fl-gen-to ( m -- )                      \ ANT-ASSIGN или ANT-LOCAL
     { m }
+    m an-type an@ ANT-ASSIGN = m an-aux an@ 0= and if
+        m fl-gen-idx-assign exit
+    then
     stack-mode? @ if
         cr ." flua: locals/assign not supported in -- @stack function" cr
         -1 throw
     then
     m an-aux an@ { ns }
-    ns ulist-len { n }
+    ns addrlist-len { n }
+    m n fl-assign-index-check
     fl-expect-outs @ >r
     n fl-expect-outs !
     emit-ind
@@ -352,7 +489,7 @@ create fl-emit-name-buf 128 allot
     r> fl-expect-outs !
     \ to в обратном порядке: TOS → последнее имя
     n 0 ?do
-        n 1- i - ns ulist-nth-addr an-text
+        n 1- i - ns addrlist-nth-addr an-text
         s" to " emit-st emit-st emit-bl
     loop
     emit-nl
@@ -363,8 +500,8 @@ defer fl-gen-stmt
 
 : fl-gen-stmts ( lst -- )
     { lst }
-    lst ulist-len 0 ?do
-        i lst ulist-nth-addr fl-gen-stmt
+    lst addrlist-len 0 ?do
+        i lst addrlist-nth-addr fl-gen-stmt
     loop ;
 
 : fl-gen-branch ( br bi -- )
@@ -397,7 +534,7 @@ defer fl-gen-stmt
     { m }
     m an-aux an@ { branches }
     emit-ind
-    0 branches ulist-nth-addr an-l an@ fl-eval
+    0 branches addrlist-nth-addr an-l an@ fl-eval
     stack-mode? @ if
         fl-vs @ m-find fl-vsz @ 0 fl-o!
         1 fl-on ! fl-arrange
@@ -406,8 +543,8 @@ defer fl-gen-stmt
     stack-mode? @ if m-pop then
     fl-indent+
     1 fl-if-n !
-    branches ulist-len 0 ?do
-        i branches ulist-nth-addr i fl-gen-branch
+    branches addrlist-len 0 ?do
+        i branches addrlist-nth-addr i fl-gen-branch
     loop
     fl-if-n @ 0 ?do
         fl-indent-
@@ -484,14 +621,14 @@ defer fl-gen-stmt
 
 \ ---- подсчёт использований параметров: обход дерева (--stack) ----
 \ fl-count-tree считает AN-ID-листы с именем fl-nna/fl-nnu (имя-вызова
-\ живёт в AN-CALL, не в AN-ID). xt для ulist-each параметров — fl-count-one-tree.
+\ живёт в AN-CALL, не в AN-ID). xt для addrlist-each параметров — fl-count-one-tree.
 variable fl-gen-cur                     \ генерируемая функция (корень обхода)
 defer fl-count-tree                     \ рекурсия: узел → счёт по fl-cn
 
 : fl-count-tree-lst ( lst -- )          \ ulist узлов: каждый — fl-count-tree
     { lst }
-    lst ulist-len 0 ?do
-        i lst ulist-nth-addr fl-count-tree
+    lst addrlist-len 0 ?do
+        i lst addrlist-nth-addr fl-count-tree
     loop ;
 
 : fl-count-tree-1 ( m -- )
@@ -515,10 +652,18 @@ defer fl-count-tree                     \ рекурсия: узел → счё�
             m an-aux an@ fl-count-tree-lst
         endof
         ANT-RET of m an-aux an@ fl-count-tree-lst endof
-        ANT-ASSIGN of m an-l an@ fl-count-tree endof
+        ANT-ASSIGN of
+            m an-aux an@ 0= if
+                m an-r an@ fl-count-tree
+            then
+            m an-l an@ fl-count-tree
+        endof
         ANT-LOCAL  of m an-l an@ fl-count-tree endof
         ANT-WHILE  of m an-l an@ fl-count-tree m an-aux an@ fl-count-tree-lst endof
         ANT-REPEAT of m an-aux an@ fl-count-tree-lst m an-l an@ fl-count-tree endof
+        ANT-TABLE of m an-aux an@ fl-count-tree-lst endof
+        ANT-INDEX of m an-l an@ fl-count-tree m an-r an@ fl-count-tree endof
+        ANT-FIELD of m an-l an@ fl-count-tree endof
         ANT-NUM of endof
         ANT-STR of endof
         ANT-FN  of m an-l an@ fl-count-tree-lst endof
@@ -526,7 +671,7 @@ defer fl-count-tree                     \ рекурсия: узел → счё�
 
 : fl-count-tree-set ( -- ) ['] fl-count-tree-1 is fl-count-tree ; fl-count-tree-set
 
-\ xt для ulist-each: сколько раз параметр — лист в дереве (0 → ошибка)
+\ xt для addrlist-each: сколько раз параметр — лист в дереве (0 → ошибка)
 : fl-count-one-tree ( p -- )
     dup param-name fl-nnu ! fl-nna !
     0 fl-cn !
@@ -561,40 +706,40 @@ defer fl-collect-locals-stmt
     { m }
     m an-type an@ ANT-LOCAL = if
         m an-aux an@ { ns }
-        ns ulist-len 0 ?do
-            i ns ulist-nth-addr { id }
-            id an-pa an@ id an-pu an@ an-id fl-locals-ul @ ulist-add
+        ns addrlist-len 0 ?do
+            i ns addrlist-nth-addr { id }
+            id an-pa an@ id an-pu an@ an-id fl-locals-ul @ addrlist-add
         loop
         exit
     then
     m an-type an@ ANT-IF = if
         m an-aux an@ { brs }
-        brs ulist-len 0 ?do
-            i brs ulist-nth-addr an-aux an@ ?dup if
+        brs addrlist-len 0 ?do
+            i brs addrlist-nth-addr an-aux an@ ?dup if
                 { st }
-                st ulist-len 0 ?do
-                    i st ulist-nth-addr fl-collect-locals-stmt
+                st addrlist-len 0 ?do
+                    i st addrlist-nth-addr fl-collect-locals-stmt
                 loop
             then
         loop
     then
     m an-type an@ ANT-WHILE = if
         m an-aux an@ { st }
-        st ulist-len 0 ?do i st ulist-nth-addr fl-collect-locals-stmt loop
+        st addrlist-len 0 ?do i st addrlist-nth-addr fl-collect-locals-stmt loop
     then
     m an-type an@ ANT-REPEAT = if
         m an-aux an@ { st }
-        st ulist-len 0 ?do i st ulist-nth-addr fl-collect-locals-stmt loop
+        st addrlist-len 0 ?do i st addrlist-nth-addr fl-collect-locals-stmt loop
     then
     m an-type an@ ANT-FOR = if
         m an-aux an@ { st }
-        st ulist-len 0 ?do i st ulist-nth-addr fl-collect-locals-stmt loop
+        st addrlist-len 0 ?do i st addrlist-nth-addr fl-collect-locals-stmt loop
     then ;
 ' fl-collect-locals-stmt-1 is fl-collect-locals-stmt
 
 : fl-emit-local-names ( -- )
-    fl-locals-ul @ ulist-len 0 ?do
-        i fl-locals-ul @ ulist-nth-addr an-text emit-st emit-bl
+    fl-locals-ul @ addrlist-len 0 ?do
+        i fl-locals-ul @ addrlist-nth-addr an-text emit-st emit-bl
     loop ;
 
 \ вывести «-- » / «-- r » / «-- r1 r2 »
@@ -611,7 +756,7 @@ defer fl-collect-locals-stmt
 defer fl-scan-arity-stmt
 : fl-scan-arity-ret ( m -- )
     { m }
-    m an-aux an@ ulist-len { n }
+    m an-aux an@ addrlist-len { n }
     fl-out-arity @ 0< if
         n fl-out-arity !
     else
@@ -635,22 +780,22 @@ defer fl-scan-arity-stmt
     m an-type an@ ANT-RET = if m fl-scan-arity-ret exit then
     m an-type an@ ANT-IF = if
         m an-aux an@ { brs }
-        brs ulist-len 0 ?do
-            i brs ulist-nth-addr an-aux an@ { st }
-            st ulist-len 0 ?do i st ulist-nth-addr fl-scan-arity-stmt loop
+        brs addrlist-len 0 ?do
+            i brs addrlist-nth-addr an-aux an@ { st }
+            st addrlist-len 0 ?do i st addrlist-nth-addr fl-scan-arity-stmt loop
         loop
     then
     m an-type an@ ANT-WHILE = if
         m an-aux an@ { st }
-        st ulist-len 0 ?do i st ulist-nth-addr fl-scan-arity-stmt loop
+        st addrlist-len 0 ?do i st addrlist-nth-addr fl-scan-arity-stmt loop
     then
     m an-type an@ ANT-REPEAT = if
         m an-aux an@ { st }
-        st ulist-len 0 ?do i st ulist-nth-addr fl-scan-arity-stmt loop
+        st addrlist-len 0 ?do i st addrlist-nth-addr fl-scan-arity-stmt loop
     then
     m an-type an@ ANT-FOR = if
         m an-aux an@ { st }
-        st ulist-len 0 ?do i st ulist-nth-addr fl-scan-arity-stmt loop
+        st addrlist-len 0 ?do i st addrlist-nth-addr fl-scan-arity-stmt loop
     then ;
 ' fl-scan-arity-stmt-1 is fl-scan-arity-stmt
 
@@ -660,33 +805,33 @@ defer fl-scan-arity-stmt
     fn an-flags an@ FN-STACK and 0<> stack-mode? !
     fn an-flags an@ FN-PROC  and 0<> proc-mode?  !
     proc-mode? @ if 0 else -1 then fl-out-arity !   \ -1 = ещё не видели return
-    ulist-new fl-params-ul !
+    addrlist-new fl-params-ul !
     fn an-aux an@ { params }
-    params ulist-len 0 ?do
-        i params ulist-nth-addr an-text param-new
-        fl-params-ul @ ulist-add
+    params addrlist-len 0 ?do
+        i params addrlist-nth-addr an-text param-new
+        fl-params-ul @ addrlist-add
     loop
-    fl-params-ul @ ulist-reverse
+    fl-params-ul @ addrlist-reverse
     fn an-text fl-fname-u ! fl-fname-a !
     \ locals из тела
-    ulist-new fl-locals-ul !
+    addrlist-new fl-locals-ul !
     fn an-l an@ { stmts0 }
-    stmts0 ulist-len 0 ?do
-        i stmts0 ulist-nth-addr fl-collect-locals-stmt
+    stmts0 addrlist-len 0 ?do
+        i stmts0 addrlist-nth-addr fl-collect-locals-stmt
     loop
-    fl-locals-ul @ ulist-reverse
+    fl-locals-ul @ addrlist-reverse
     \ out-arity из всех return
-    stmts0 ulist-len 0 ?do
-        i stmts0 ulist-nth-addr fl-scan-arity-stmt
+    stmts0 addrlist-len 0 ?do
+        i stmts0 addrlist-nth-addr fl-scan-arity-stmt
     loop
     fl-out-arity @ 0< if                \ не было return
         proc-mode? @ if 0 else 1 then fl-out-arity !
     then
     m-reset
-    fl-params-ul @ ulist-len 0 ?do i m-append loop
+    fl-params-ul @ addrlist-len 0 ?do i m-append loop
     stack-mode? @ if
         fn fl-gen-cur !
-        ['] fl-count-one-tree fl-params-ul @ ulist-each
+        ['] fl-count-one-tree fl-params-ul @ addrlist-each
     then
     fn fl-hdr-cm-fill
     cm-flush
@@ -695,9 +840,9 @@ defer fl-scan-arity-stmt
     fl-emit-out-sig emit-nl
     s" : " emit-st fl-fname-a @ fl-fname-u @ emit-st emit-bl
     stack-mode? @ 0= if
-        fl-params-ul @ ulist-len fl-locals-ul @ ulist-len or if
+        fl-params-ul @ addrlist-len fl-locals-ul @ addrlist-len or if
             s" { " emit-st fl-emit-names
-            fl-locals-ul @ ulist-len if
+            fl-locals-ul @ addrlist-len if
                 s" | " emit-st fl-emit-local-names
             then
             s" }" emit-st
@@ -706,11 +851,11 @@ defer fl-scan-arity-stmt
     emit-nl
     fl-indent+                            \ тело функции
     fn an-l an@ { stmts }
-    stmts ulist-len 0 ?do
-        i stmts ulist-nth-addr { st }
+    stmts addrlist-len 0 ?do
+        i stmts addrlist-nth-addr { st }
         st an-type an@ ANT-RET = if
             \ последний return — без exit (; закроет слово); иначе early exit
-            st  i stmts ulist-len 1- <>  fl-gen-ret
+            st  i stmts addrlist-len 1- <>  fl-gen-ret
         else
             st fl-gen-stmt
         then
@@ -723,43 +868,112 @@ defer fl-scan-arity-stmt
             -1 throw
         then
     then
-    fl-params-ul @ ulist-dispose
-    fl-locals-ul @ ulist-dispose
+    fl-params-ul @ addrlist-dispose
+    fl-locals-ul @ addrlist-dispose
     2r> proc-mode? ! stack-mode? ! ;
 
-\ top-level assign → VALUE/2VALUE или TO (строка = 2 ячейки)
+\ kind глобала по RHS: TABLE → map/list, иначе scalar
+: fl-rhs-glob-kind ( expr -- k )
+    dup an-type an@ ANT-TABLE = if
+        an-op an@ TABLE-MAP = if FG-MAP else FG-LIST then exit
+    then
+    drop FG-SCALAR ;
+
+\ гарантировать 1-cell VALUE для имени (multi-assign / to)
+: fl-glob-ensure-1 ( a u -- )
+    2dup fl-glob-find if 2drop exit then
+    2dup 1 FG-SCALAR fl-glob-add        \ add съедает копию; a u для emit
+    s" 0 VALUE " emit-st emit-st emit-bl ;
+
+\ top-level assign/local → VALUE/2VALUE / TO (в т.ч. multi)
 : fl-gen-toplevel-assign ( m -- )
     { m }
-    m an-l an@ fl-expr-ncells { nc }
-    m an-l an@ fl-eval
-    m an-text
-    2dup fl-glob-find if
-        2dup fl-glob-cells nc <> if
-            2drop
-            cr ." flua: global type mismatch (int vs string)" cr -1 throw
-        then
-        2drop s" to " emit-st m an-text emit-st
-    else
-        nc fl-glob-add
-        nc 2 = if s" 2VALUE " else s" VALUE " then emit-st
-        m an-text emit-st
+    m an-aux an@ { ns }
+    ns 0= if
+        cr ." flua: internal: top-level assign without names" cr -1 throw
     then
-    emit-bl emit-nl ;
+    ns addrlist-len { n }
+    m n fl-assign-index-check
+    n 1 = if
+        \ одно имя: int/str/table как раньше
+        m an-l an@ fl-expr-ncells { nc }
+        m an-l an@ fl-rhs-glob-kind { gk }
+        m an-l an@ fl-eval
+        0 ns addrlist-nth-addr an-text
+        2dup fl-glob-find if
+            \ nc=0 (вызов/неизвестно) → считаем 1 cell; 2VALUE не трогаем
+            2dup fl-glob-cells { gc }
+            nc if nc else 1 then
+            gc <> if
+                2drop
+                cr ." flua: global type mismatch (int vs string)" cr -1 throw
+            then
+            fl-glob-find-rec 3 cells + gk swap !
+            s" to " emit-st 0 ns addrlist-nth-addr an-text emit-st
+        else
+            \ новый глобал: неизвестный RHS → VALUE (1 cell)
+            nc 0= if 1 to nc then
+            nc gk fl-glob-add
+            nc 2 = if s" 2VALUE " else s" VALUE " then emit-st
+            0 ns addrlist-nth-addr an-text emit-st
+        then
+        emit-bl emit-nl exit
+    then
+    \ multi: все имена — 1-cell VALUE, затем to в обратном порядке
+    n 0 ?do
+        i ns addrlist-nth-addr an-text fl-glob-ensure-1
+    loop
+    fl-expect-outs @ >r
+    n fl-expect-outs !
+    m an-l an@ fl-eval
+    r> fl-expect-outs !
+    n 0 ?do
+        n 1- i - ns addrlist-nth-addr an-text
+        s" to " emit-st emit-st emit-bl
+    loop
+    emit-nl ;
+
+: fl-gen-toplevel-stmt ( m -- )           \ LOCAL / ASSIGN / idx-assign
+    dup an-type an@ ANT-ASSIGN =
+    over an-aux an@ 0= and if
+        fl-gen-idx-assign exit
+    then
+    fl-gen-toplevel-assign ;
+
+\ REPL-метка результата top-level expr ( m -- )
+: fl-repl-tag-expr ( m -- )
+    { m }
+    m an-type an@ ANT-INDEX = if
+        m an-r an@ fl-expr-ncells 2 = if 4 else 3 then
+        fl-repl-out-cells ! exit
+    then
+    m an-type an@ ANT-TABLE = if
+        m an-op an@ TABLE-MAP = if -1 else -2 then
+        fl-repl-out-cells ! exit
+    then
+    m an-type an@ ANT-ID = if
+        m an-text fl-glob-kind
+        dup FG-MAP = if drop -1 fl-repl-out-cells ! exit then
+        dup FG-LIST = if drop -2 fl-repl-out-cells ! exit then
+        drop
+    then
+    m fl-expr-ncells fl-repl-out-cells ! ;
 
 : fl-gen-item ( m -- )
     { m }
     m an-type an@ ANT-FN = if
         0 fl-repl-out-cells ! m fl-gen-fn exit
     then
-    m an-type an@ ANT-ASSIGN = if
-        0 fl-repl-out-cells ! m fl-gen-toplevel-assign exit
+    m an-type an@ ANT-ASSIGN =
+    m an-type an@ ANT-LOCAL = or if
+        0 fl-repl-out-cells ! m fl-gen-toplevel-stmt exit
     then
     \ top-level expression — запомнить тип результата для REPL-печати
     false stack-mode? !
-    m fl-expr-ncells fl-repl-out-cells !
+    m fl-repl-tag-expr
     m fl-eval emit-nl ;
 
 : fl-codegen ( -- )
-    ['] fl-gen-item an-root @ ulist-each ;
+    ['] fl-gen-item an-root @ addrlist-each ;
 
 [THEN]
