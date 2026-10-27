@@ -158,11 +158,11 @@ xs[0] = 99                                -- ulist-set-term
 ```bash
 fmix test                        # юнит + golden (оба режима)
 fmix check --stage pre-commit    # тесты + flint (0 дублей в проекте)
+fcov run fmix test && fcov report   # Cov; при смене % — badge в README
 ```
 
-Не коммитить с незелёными гейтами. Каталог `tests/golden/` исключён
-из flint (`flint-exclude` в `package.4th`) — это фикстуры, а не
-исходники.
+Не коммитить с незелёными гейтами. `tests/golden/` и `examples/` —
+`flint-exclude` / `fcov-exclude` в `package.4th` (фикстуры, не исходники).
 
 ## Карта проекта
 

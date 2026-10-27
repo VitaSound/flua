@@ -1,4 +1,7 @@
 # flua — Lua-subset to Forth transpiler
+[![License](https://img.shields.io/badge/License-COPL-red.svg)](https://raw.githubusercontent.com/VitaSound/flua/refs/heads/main/LICENSE)
+[![Ver](https://img.shields.io/badge/Ver-0.1.0-green.svg)](https://github.com/VitaSound/flua/releases/tag/0.1.0)
+[![Cov](https://img.shields.io/badge/Cov-91%25-brightgreen.svg)](https://github.com/VitaSound/flua)
 
 Transpiles a simple Lua subset to Gforth-compatible Forth source.
 **Реализация — только Forth (Gforth), без Python и внешних зависимостей.**
@@ -380,6 +383,7 @@ fn add(a, b)
 
 ```bash
 fmix test                        # весь набор (flua_test + golden_test + ast_test)
+fcov run fmix test && fcov report   # definition coverage (badge Cov)
 gforth tests/flua_test.4th       # юнит-тесты отдельно
 gforth tests/golden_test.4th     # golden-тесты отдельно
 gforth tests/ast_test.4th        # тесты вывода AST отдельно
