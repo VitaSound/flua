@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # flua-verify <file.lua> — быстрая проверка для ИИ/разработчика:
-#   1. транспиляция Lua → Forth в обоих режимах (locals и --stack);
+#   1. транспиляция Lua → Forth (режимы функций — по прагмам -- @stack / -- @proc);
 #   2. компиляция сгенерированного Forth гforth'ом (ловит синтаксис
 #      и undefined words — например, вызов несуществующего слова).
 #
 # Выход 0 — можно доверять генерату; 1 — есть проблемы (парсинг
 # или невалидный Forth), причины печатаются в stderr.
 #
-# Проверка ВЫПОЛНЕНИМ (что функция даёт нужный результат):
+# Проверка ВЫПОЛНЕНИЯ (что функция даёт нужный результат):
 #   flua file.lua > /tmp/x.4th
 #   gforth -e 'include /tmp/x.4th 2 3 add . cr bye'    # → 5
 
@@ -29,26 +29,20 @@ tmp=$(mktemp -d) || exit 2
 trap 'rm -rf "$tmp"' EXIT
 
 fail=0
-for mode in locals stack; do
-    flag=
-    [ "$mode" = stack ] && flag=--stack
 
-    if ! "$FLUA_HOME/bin/flua" $flag "$src" > "$tmp/$mode.4th" 2> "$tmp/$mode.trans"; then
-        echo "FAIL [$mode] транспиляция: $src" >&2
-        # сообщение компилятора (syntax error и т.п.) уходит в stdout,\        # т.е. в файл генерации — показываем оба потока
-        sed 's/^/    /' "$tmp/$mode.4th" >&2
-        sed 's/^/    /' "$tmp/$mode.trans" >&2
-        fail=1
-        continue
-    fi
+if ! "$FLUA_HOME/bin/flua" "$src" > "$tmp/out.4th" 2> "$tmp/trans"; then
+    echo "FAIL транспиляция: $src" >&2
+    sed 's/^/    /' "$tmp/out.4th" >&2
+    sed 's/^/    /' "$tmp/trans" >&2
+    exit 1
+fi
 
-    if "$GFORTH" -e "include $tmp/$mode.4th bye" 2> "$tmp/$mode.err"; then
-        echo "OK   [$mode] $src"
-    else
-        echo "FAIL [$mode] сгенерированный Forth не компилируется: $src" >&2
-        grep -m 3 'error:' "$tmp/$mode.err" >&2 || sed 's/^/    /' "$tmp/$mode.err" >&2
-        fail=1
-    fi
-done
+if "$GFORTH" -e "include $tmp/out.4th bye" 2> "$tmp/err"; then
+    echo "OK   $src"
+else
+    echo "FAIL сгенерированный Forth не компилируется: $src" >&2
+    grep -m 3 'error:' "$tmp/err" >&2 || sed 's/^/    /' "$tmp/err" >&2
+    fail=1
+fi
 
 exit $fail

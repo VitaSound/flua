@@ -26,28 +26,20 @@ require ../flua.4th
 
 \ ( lua-a lua-u -- f ) ожидаем синтаксической ошибки
 : expect-error ( lua-a lua-u -- f )
-    ['] fl-compile catch if 2drop true else 2drop false then ;
-
-\ ---------- режим --stack ----------
-\ ( lua-a lua-u expected-a expected-u -- f ) точное сравнение в режиме --stack
-: transpiles-stack? ( lua-a lua-u expected-a expected-u -- f )
-    true stack-mode? !
-    2>r fl-compile emit-result false stack-mode? !
-    2r> compare 0= ;
-\ ( lua-a lua-u -- ) скомпилировать в --stack и выполнить
-: run-stack ( lua-a lua-u -- )
-    true stack-mode? ! fl-compile emit-result false stack-mode? ! evaluate ;
-\ ( lua-a lua-u -- f ) ожидаем ошибки в режиме --stack
+    ['] fl-compile catch if 2drop true else false then ;
 : expect-stack-error ( lua-a lua-u -- f )
-    true stack-mode? !
-    ['] fl-compile catch if 2drop true else 2drop false then
-    false stack-mode? ! ;
+    ['] fl-compile catch if 2drop true else false then ;
+
+\ ---------- режим -- @stack (прагма перед function) ----------
+: transpiles-stack? ( lua-a lua-u expected-a expected-u -- f )
+    2>r fl-compile emit-result 2r> compare 0= ;
+: run-stack ( lua-a lua-u -- ) fl-compile emit-result evaluate ;
 
 \ ---------- точные сравнения ----------
 T{ s\" function add(a,b) return a+b end"
    s\" \\ ( a b -- r )
 : add { a b }
-a b + 
+  a b + 
 ;
 "
    transpiles? -> true }T
@@ -55,7 +47,7 @@ a b +
 T{ s\" function compute(x, y, z) return (x + y) * z end"
    s\" \\ ( x y z -- r )
 : compute { x y z }
-x y + z * 
+  x y + z * 
 ;
 "
    transpiles? -> true }T
@@ -65,7 +57,7 @@ function n(a) return -a + 0x10 end"
    s\" \\ header comment
 \\ ( a -- r )
 : n { a }
-a negate $10 + 
+  a negate $10 + 
 ;
 "
    transpiles? -> true }T
@@ -95,6 +87,9 @@ T{ s\" function cat(a) return a .. \"!\" end"  s" s+"   has-output? -> true }T
 T{ s\" function p(a, b) return a + b end"   s" { a b }" has-output? -> true }T
 T{ s\" function noargs() return 7 end"      s" \ ( -- r )" has-output? -> true }T
 T{ s\" function w(a) return a * -2 end"     s" negate"  has-output? -> true }T
+T{ s" print(1, 2)"  s" 0 .r" has-output? -> true }T
+T{ s\" print(\"hi\")" s" type" has-output? -> true }T
+T{ s\" function f(x) print(x) return x end" s" 0 .r" has-output? -> true }T
 
 \ ---------- генерированный Forth реально выполняется ----------
 T{ s\" function add(a,b) return a+b end" run-generated 2 3 add -> 5 }T
@@ -122,43 +117,54 @@ T{ greet-returns-hi? -> true }T
 T{ cat-runs? -> true }T
 
 \ ---------- режим --stack: стековая эмиссия без { } ----------
-T{ s\" function add(a,b) return a+b end"
-   s\" \\ ( a b -- r )
+T{ s\" -- @stack
+function add(a,b) return a+b end"
+   s\" \\ @stack
+\\ ( a b -- r )
 : add 
-+ 
+  + 
 ;
 "
    transpiles-stack? -> true }T
 
-T{ s\" function neg(v) return -v end"
-   s\" \\ ( v -- r )
+T{ s\" -- @stack
+function neg(v) return -v end"
+   s\" \\ @stack
+\\ ( v -- r )
 : neg 
-negate 
+  negate 
 ;
 "
    transpiles-stack? -> true }T
 
-T{ s\" function noargs() return 7 end"
-   s\" \\ ( -- r )
+T{ s\" -- @stack
+function noargs() return 7 end"
+   s\" \\ @stack
+\\ ( -- r )
 : noargs 
-7 
+  7 
 ;
 "
    transpiles-stack? -> true }T
 
 \ обратный порядок операндов → swap (для d=1 эмитится swap, не 1 roll)
-T{ s\" function rb(a,b) return b + a end"
-   s\" \\ ( a b -- r )
+T{ s\" -- @stack
+function rb(a,b) return b + a end"
+   s\" \\ @stack
+\\ ( a b -- r )
 : rb 
-swap + 
+  swap + 
 ;
 "
    transpiles-stack? -> true }T
 
 \ выполнение стекового генерата: два roll = swap, дважды = ид
-T{ s\" function add(a,b) return a+b end" run-stack 2 3 add -> 5 }T
-T{ s\" function neg(v) return -v end" run-stack 7 neg -> -7 }T
-T{ s\" function rb(a,b) return b + a end" run-stack 2 3 rb -> 5 }T
+T{ s\" -- @stack
+function add(a,b) return a+b end" run-stack 2 3 add -> 5 }T
+T{ s\" -- @stack
+function neg(v) return -v end" run-stack 7 neg -> -7 }T
+T{ s\" -- @stack
+function rb(a,b) return b + a end" run-stack 2 3 rb -> 5 }T
 
 \ ---------- if / сравнения ----------
 T{ s\" function f(a,b) if a then return b else return a end end" s\" if " has-output? -> true }T
@@ -191,15 +197,19 @@ T{ s\" function s3(n) if n > 0 then return 1 elseif n < 0 then return -1 else re
    run-generated 0 s3 -> 0 }T
 
 \ выполнение if в режиме --stack
-T{ s\" function abs(n) if n < 0 then return n * -1 else return n end end"
+T{ s\" -- @stack
+function abs(n) if n < 0 then return n * -1 else return n end end"
    run-stack -4 abs -> 4 }T
-T{ s\" function abs(n) if n < 0 then return n * -1 else return n end end"
+T{ s\" -- @stack
+function abs(n) if n < 0 then return n * -1 else return n end end"
    run-stack 7 abs -> 7 }T
-T{ s\" function t() if 1 > 2 then return 11 else return 22 end end"
+T{ s\" -- @stack
+function t() if 1 > 2 then return 11 else return 22 end end"
    run-stack t -> 22 }T
 
 \ elseif в режиме --stack
-T{ s\" function s3(n) if n > 0 then return 1 elseif n < 0 then return -1 else return 0 end end"
+T{ s\" -- @stack
+function s3(n) if n > 0 then return 1 elseif n < 0 then return -1 else return 0 end end"
    run-stack -5 s3 -> -1 }T
 
 \ if без else (опционален): при истинном условии → then-ветка
@@ -207,15 +217,17 @@ T{ s\" function t() if 1 < 2 then return 42 end end"
    run-generated t -> 42 }T
 
 \ ограничения --stack: неиспользуемый параметр и конкатенация с целым
-T{ s\" function u(a) return 7 end" expect-stack-error -> true }T
-T{ s\" function cat(a) return a .. \"!\" end" expect-stack-error -> true }T
+T{ s\" -- @stack
+function u(a) return 7 end" expect-stack-error -> true }T
+T{ s\" -- @stack
+function cat(a) return a .. \"!\" end" expect-stack-error -> true }T
 
 \ ---------- остаток от деления: % → mod ----------
 \ точный вывод (locals)
 T{ s\" function modulo(a,b) return a % b end"
    s\" \\ ( a b -- r )
 : modulo { a b }
-a b mod 
+  a b mod 
 ;
 "
    transpiles? -> true }T
@@ -223,7 +235,7 @@ a b mod
 T{ s\" function mixed(a,b,c) return a * b % c + a end"
    s\" \\ ( a b c -- r )
 : mixed { a b c }
-a b * c mod a + 
+  a b * c mod a + 
 ;
 "
    transpiles? -> true }T
@@ -231,15 +243,19 @@ a b * c mod a +
 T{ s\" function modulo(a,b) return a % b end" run-generated 5 3 modulo -> 2 }T
 T{ s\" function modulo(a,b) return a % b end" run-generated -5 3 modulo -> 1 }T
 \ режим --stack: точный вывод и выполнение
-T{ s\" function modulo(a,b) return a % b end"
-   s\" \\ ( a b -- r )
+T{ s\" -- @stack
+function modulo(a,b) return a % b end"
+   s\" \\ @stack
+\\ ( a b -- r )
 : modulo 
-mod 
+  mod 
 ;
 "
    transpiles-stack? -> true }T
-T{ s\" function modulo(a,b) return a % b end" run-stack -5 3 modulo -> 1 }T
-T{ s\" function mixed(a,b,c) return a * b % c + a end" run-stack 2 3 4 mixed -> 4 }T
+T{ s\" -- @stack
+function modulo(a,b) return a % b end" run-stack -5 3 modulo -> 1 }T
+T{ s\" -- @stack
+function mixed(a,b,c) return a * b % c + a end" run-stack 2 3 4 mixed -> 4 }T
 
 \ ---------- лексер: одиночный оператор ----------
 \ ( lua-a lua-u i -- type len ) токенизировать источник и взять type/len
@@ -255,7 +271,7 @@ T{ s\" function m(a,b) return a % b end" 9 tok-of -> TK-OP 1 }T
 T{ s\" function fnot(a) return not a end"
    s\" \\ ( a -- r )
 : fnot { a }
-a 0= 
+  a 0= 
 ;
 "
    transpiles? -> true }T
@@ -263,7 +279,7 @@ a 0=
 T{ s\" function fband(a,b) return a and b end"
    s\" \\ ( a b -- r )
 : fband { a b }
-a dup if drop b then 
+  a dup if drop b then 
 ;
 "
    transpiles? -> true }T
@@ -271,22 +287,26 @@ a dup if drop b then
 T{ s\" function fbor(a,b) return a or b end"
    s\" \\ ( a b -- r )
 : fbor { a b }
-a dup if else drop b then 
+  a dup if else drop b then 
 ;
 "
    transpiles? -> true }T
 \ режим --stack: та же эмиссия с выравниванием операндов
-T{ s\" function fband(a,b) return a and b end"
-   s\" \\ ( a b -- r )
+T{ s\" -- @stack
+function fband(a,b) return a and b end"
+   s\" \\ @stack
+\\ ( a b -- r )
 : fband 
-swap dup if drop then 
+  swap dup if drop else nip then 
 ;
 "
    transpiles-stack? -> true }T
-T{ s\" function fnot(a) return not a end"
-   s\" \\ ( a -- r )
+T{ s\" -- @stack
+function fnot(a) return not a end"
+   s\" \\ @stack
+\\ ( a -- r )
 : fnot 
-0= 
+  0= 
 ;
 "
    transpiles-stack? -> true }T
@@ -305,18 +325,21 @@ T{ s\" function fchain(a,b,c) return a and b or c end" run-generated 0 0 5 fchai
 T{ s\" function fneg(a) return not a or a end" run-generated 0 fneg -> -1 }T
 T{ s\" function fneg(a) return not a or a end" run-generated 5 fneg -> 5 }T
 \ та же семантика в --stack
-T{ s\" function fband(a,b) return a and b end" run-stack 10 3 fband -> 3 }T
-T{ s\" function fchain(a,b,c) return a and b or c end" run-stack 0 0 5 fchain -> 5 }T
-T{ s\" function fnot(a) return not a end" run-stack 0 fnot -> -1 }T
+T{ s\" -- @stack
+function fband(a,b) return a and b end" run-stack 10 3 fband -> 3 }T
+T{ s\" -- @stack
+function fband(a,b) return a and b end" run-stack 0 3 fband -> 0 }T
+T{ s\" -- @stack
+function fnot(a) return not a end" run-stack 0 fnot -> -1 }T
 \ шорт-кircuit на выполнении: fprobe бросает исключение, если вызван —
 \ a=0 возвращает 0 молча (правый операнд не выполнялся),
 \ a=5 доходит до fprobe (выполнялся) — ловим throw через catch
-: fprobe ( n -- n ) abort" PROBE CALLED " ;
+: fprobe ( n -- n ) drop -1 throw ;
 T{ s\" function fsc(a) return a and fprobe(7) end" run-generated 0 fsc -> 0 }T
 \ вызов с a≠0 внутри слова (catch только в колонном определении):
 \ fprobe выполнится и бросит — catch возвращает код ≠ 0
 : fsc5 ( -- n ) 5 fsc ;
-T{ ['] fsc5 catch 0<> -> true }T
+T{ ' fsc5 catch 0<> -> true }T
 
 \ ---------- позиция ошибки: строка/столбец ----------
 \ src-line-col: байт → (line col); границы строк — одиночный \n (10)
@@ -331,7 +354,7 @@ T{ s\" line one
 line two" src-set 10 fl-syntax-msg s" 2:2 (offset 10)" compare -> 0 }T
 
 \ ---------- ошибки парсинга ----------
-T{ s\" naf return x end" expect-error -> true }T
+T{ s\" function (a) return a end" expect-error -> true }T
 T{ s\" function broken( return end" expect-error -> true }T
 \ if без then / if без end / return вне ветки if
 T{ s\" function f() if 1 return 2 end" expect-error -> true }T

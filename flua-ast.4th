@@ -37,6 +37,11 @@ require ./flua-tokens.4th
 6 constant ANT-FN
 7 constant ANT-IF
 8 constant ANT-BR
+9 constant ANT-ASSIGN                   \ ID '=' expr (имя pa/pu, expr an-l)
+10 constant ANT-LOCAL                   \ local ID '=' expr
+11 constant ANT-RET                     \ return [expr (, expr)*]; aux = ulist exprs
+12 constant ANT-WHILE                   \ while: cond an-l, body an-aux
+13 constant ANT-REPEAT                  \ repeat: body an-aux, cond an-l
 
 256 constant OP-CONCAT                   \ «..» — не ASCII-символ
 257 constant OP-LE                       \ «<=»
@@ -56,7 +61,11 @@ require ./flua-tokens.4th
 4 constant an-l
 5 constant an-r
 6 constant an-aux
-7 constant an-cells
+7 constant an-flags                     \ ANT-FN: биты прагм (@stack/@proc)
+8 constant an-cells
+
+1 constant FN-STACK                     \ -- @stack
+2 constant FN-PROC                      \ -- @proc
 
 \ ================= токен-доступ (поверх flua-tokens) =================
 
@@ -132,7 +141,7 @@ ulist-new an-root !
 \ освободить узел: контейнер aux (аргументы/параметры) и сама запись
 : an-free-one ( m -- )
     dup an-aux an@ ?dup if ulist-dispose then
-    dup an-type an@ ANT-FN = if          \ тело — ulist stmt'ов в an-l
+    dup an-type an@ ANT-FN = if
         dup an-l an@ ?dup if ulist-dispose then
     then
     free throw ;
@@ -203,14 +212,73 @@ ulist-new an-root !
     pu m an-pu an!
     params m an-aux an!
     stmts m an-l an!                     \ тело: ulist stmt'ов
+    0 m an-flags an!
     m ;
 
-\ ветка if: cond — условие (0 — для else), val — выражение ветки
-: an-br ( cond val -- m )
-    { cond val }
+: an-assign ( pa pu expr -- m )
+    { pa pu expr }
+    ANT-ASSIGN an-node { m }
+    pa m an-pa an! pu m an-pu an!
+    expr m an-l an! m ;
+
+: an-local ( pa pu expr -- m )
+    { pa pu expr }
+    ANT-LOCAL an-node { m }
+    pa m an-pa an! pu m an-pu an!
+    expr m an-l an! m ;
+
+: an-ret ( exprs -- m )                  \ ulist выражений (0 = пустой return)
+    { exprs }
+    ANT-RET an-node { m }
+    exprs m an-aux an! m ;
+
+: an-while ( cond body -- m )
+    { cond body }
+    ANT-WHILE an-node { m }
+    cond m an-l an! body m an-aux an! m ;
+
+: an-repeat ( body cond -- m )
+    { body cond }
+    ANT-REPEAT an-node { m }
+    body m an-aux an! cond m an-l an! m ;
+
+\ trim пробелов по краям (a u -- a' u')
+: fl-trim-lead ( a u -- a u )
+    begin dup while over c@ bl <= while 1 /string repeat then ;
+: fl-trim-trail ( a u -- a u )
+    begin dup while 2dup + 1- c@ bl <= while 1- repeat then ;
+: fl-trim ( a u -- a u ) fl-trim-lead fl-trim-trail ;
+
+\ тело TK-CM (после «--») — ровно needle (с trim)?
+: fl-cm-is ( a u needle-a needle-u -- f )
+    2swap fl-trim 2swap compare 0= ;
+
+variable fl-pragma-acc
+
+\ просканировать hdr CM-диапазон fn → биты FN-STACK / FN-PROC в an-flags
+: fl-fn-scan-pragmas ( fn -- )
+    { fn }
+    0 fl-pragma-acc !
+    tok-i @ >r
+    fn an-op an@ tok-i !
+    begin tok-i @ fn an-r an@ < while
+        tok-t TK-CM = if
+            tok-text
+            2dup s" @stack" fl-cm-is if FN-STACK fl-pragma-acc @ or fl-pragma-acc ! then
+            2dup s" @proc"  fl-cm-is if FN-PROC  fl-pragma-acc @ or fl-pragma-acc ! then
+            2drop
+        then
+        tok-next
+    repeat
+    r> tok-i !
+    fl-pragma-acc @ fn an-flags an! ;
+
+\ ветка if: cond — условие (0 — для else), stmts — ulist операторов ветки
+: an-br ( cond stmts -- m )
+    { cond stmts }
     ANT-BR an-node { m }
     cond m an-l an!
-    val m an-r an!
+    stmts m an-aux an!
     m ;
 
 \ if: aux — ulist веток ANT-BR (первая, затем elseif…, затем else)
@@ -380,37 +448,127 @@ defer fl-p-unary                         \ рекурсивное слово
 
 ' fl-p-or is fl-p-expr
 
-\ ---------------- если ----------------
+\ ---------------- операторы ----------------
 
-\ ветка после then/elseif/else: «return» expr — в ветке return обязателен
-\ (кодоген: fl-ret-stmt)
-: fl-p-ret ( -- m )
-    s" return" tok-kw? 0= if fl-p-error then
-    tok-next fl-p-expr ;
+defer fl-p-stmt                          \ один stmt
+defer fl-p-if
+defer fl-p-while
+defer fl-p-repeat
 
-\ курсор на «if»: собрать ветки в ulist (первая, elseif…, else)
-: fl-p-if ( -- m )
-    tok-next                             \ съесть «if»
+\ return [expr (, expr)*]
+: fl-p-return ( -- m )
+    tok-next                             \ съесть return
+    ulist-new { exprs }
+    \ пустой return: следующий токен — конец stmt (end/elseif/else/function/…)
+    s" end" tok-kw? s" elseif" tok-kw? or s" else" tok-kw? or
+    s" until" tok-kw? or s" function" tok-kw? or tok-t TK-EOF = or if
+        exprs an-ret exit
+    then
+    fl-p-expr exprs ulist-add
+    begin
+        [char] , tok-op? if
+            tok-next fl-p-expr exprs ulist-add false
+        else true then
+    until
+    exprs ulist-reverse exprs an-ret ;
+
+\ local name = expr
+: fl-p-local ( -- m )
+    tok-next                             \ local
+    tok-skip-cm
+    tok-t TK-ID = 0= if fl-p-error then
+    tok-p tok-l 2>r
+    tok-next
+    [char] = tok-op? 0= if fl-p-error then
+    tok-next
+    fl-p-expr
+    2r> rot an-local ;
+
+\ name = expr (курсор на ID)
+: fl-p-assign ( -- m )
+    tok-p tok-l 2>r
+    tok-next
+    [char] = tok-op? 0= if fl-p-error then
+    tok-next
+    fl-p-expr
+    2r> rot an-assign ;
+
+\ ID '=' ? lookahead
+: fl-p-id-assign? ( -- f )
+    tok-skip-cm
+    tok-t TK-ID = 0= if false exit then
+    tok-i @ >r
+    tok-next
+    [char] = tok-op?
+    r> tok-i ! ;
+
+\ ID '(' ? — вызов как statement (print и др.)
+: fl-p-id-call? ( -- f )
+    tok-skip-cm
+    tok-t TK-ID = 0= if false exit then
+    tok-i @ >r
+    tok-next
+    [char] ( tok-op?
+    r> tok-i ! ;
+
+: fl-p-stmt-1 ( -- m )
+    s" function" tok-kw? if
+        cr ." flua: nested functions not allowed" cr fl-p-error
+    then
+    s" return" tok-kw? if fl-p-return exit then
+    s" local" tok-kw? if fl-p-local exit then
+    s" if" tok-kw? if fl-p-if exit then
+    s" while" tok-kw? if fl-p-while exit then
+    s" repeat" tok-kw? if fl-p-repeat exit then
+    fl-p-id-assign? if fl-p-assign exit then
+    fl-p-id-call? if fl-p-expr exit then
+    fl-p-error ;
+
+' fl-p-stmt-1 is fl-p-stmt
+
+\ список stmt до тех пор, пока end-check ( -- f ) ложь; end-check не должен
+\ сдвигать курсор на true (ключевое слово остаётся)
+: fl-p-stmts-until ( xt -- stmts )
+    { endxt }
+    ulist-new { stmts }
+    begin
+        endxt execute if
+            stmts ulist-reverse stmts exit
+        then
+        fl-p-stmt stmts ulist-add
+        false
+    until ;
+
+: fl-p-end-if-branch? ( -- f )
+    s" elseif" tok-kw? s" else" tok-kw? or s" end" tok-kw? or ;
+
+: fl-p-end-body? ( -- f ) s" end" tok-kw? ;
+: fl-p-end-while? ( -- f ) s" end" tok-kw? ;
+: fl-p-end-repeat? ( -- f ) s" until" tok-kw? ;
+
+\ курсор на «if»
+: fl-p-if-1 ( -- m )
+    tok-next
     ulist-new { branches }
-    fl-p-expr                            \ условие первой ветки
+    fl-p-expr
     s" then" tok-kw? 0= if fl-p-error then
     tok-next
-    fl-p-ret                             \ значение первой ветки
+    ['] fl-p-end-if-branch? fl-p-stmts-until
     an-br branches ulist-add
     begin
         s" elseif" tok-kw? if
-            tok-next fl-p-expr           \ условие
+            tok-next fl-p-expr
             s" then" tok-kw? 0= if fl-p-error then
             tok-next
-            fl-p-ret
+            ['] fl-p-end-if-branch? fl-p-stmts-until
             an-br branches ulist-add
-            false                        \ ветки ещё могут быть
+            false
         else
             s" else" tok-kw? if
                 tok-next
-                fl-p-ret                 \ ( val ), условие 0
+                ['] fl-p-end-if-branch? fl-p-stmts-until
                 0 swap an-br branches ulist-add
-                s" end" tok-kw? 0= if fl-p-error then \ else — последняя: end обязателен
+                s" end" tok-kw? 0= if fl-p-error then
                 tok-next
                 true
             else
@@ -420,28 +578,31 @@ defer fl-p-unary                         \ рекурсивное слово
             then
         then
     until
-    branches ulist-reverse               \ ulist-add в голову → порядок чтения
-    branches an-if ;
+    branches ulist-reverse branches an-if ;
+' fl-p-if-1 is fl-p-if
 
-\ тело функции: stmt'* до «end» (stmt := return-expr | if); end не съедаем —
-\ его проверяет fl-p-function
+: fl-p-while-1 ( -- m )
+    tok-next
+    fl-p-expr
+    s" do" tok-kw? 0= if fl-p-error then
+    tok-next
+    ['] fl-p-end-while? fl-p-stmts-until
+    s" end" tok-kw? 0= if fl-p-error then
+    tok-next
+    an-while ;
+' fl-p-while-1 is fl-p-while
+
+: fl-p-repeat-1 ( -- m )
+    tok-next
+    ['] fl-p-end-repeat? fl-p-stmts-until
+    s" until" tok-kw? 0= if fl-p-error then
+    tok-next
+    fl-p-expr
+    an-repeat ;
+' fl-p-repeat-1 is fl-p-repeat
+
 : fl-p-body ( -- stmts )
-    ulist-new { stmts }
-    begin
-        s" return" tok-kw? if
-            tok-next fl-p-expr stmts ulist-add
-            false                        \ продолжить
-        else
-            s" if" tok-kw? if
-                fl-p-if stmts ulist-add
-                false
-            else
-                s" end" tok-kw? 0= if fl-p-error then
-                true                     \ тело закончилось
-            then
-        then
-    until
-    stmts ulist-reverse stmts ;          \ порядок чтения stmt'ов (reverse — void)
+    ['] fl-p-end-body? fl-p-stmts-until ;
 
 \ ---------------- функция ----------------
 
@@ -483,22 +644,27 @@ variable fl-p-params                      \ параметры текущей ф
     an-fn                               \ ( fn )
     fl-hdr-i1 @ over an-r an!            \ граница серии CM (токен после неё)
     fl-hdr-i0 @ over an-op an!           \ первый токен серии
+    dup fl-fn-scan-pragmas
     ;
 
 \ ---------------- файл ----------------
+
+\ top-level item: function | assign | expr
+: fl-p-toplevel ( -- m )
+    s" function" tok-kw? if fl-p-function exit then
+    fl-p-id-assign? if fl-p-assign exit then
+    fl-p-expr ;
 
 : fl-p-program ( -- )
     an-reset
     fl-tokenize
     begin
-        fl-p-hdr-cm                      \ диапазон серии комментариев →
-                                         \ (fl-hdr-i0, fl-hdr-i1) для an-fn
+        fl-p-hdr-cm
         tok-t TK-EOF = if
-            an-root @ ulist-reverse exit  \ обход ulist-add → порядок чтения
+            an-root @ ulist-reverse exit
         then
-        s" function" tok-kw? 0= if fl-p-error then
-        fl-p-function an-root @ ulist-add
-        false                             \ gforth: repeat требует while → until
+        fl-p-toplevel an-root @ ulist-add
+        false
     until ;
 
 \ ================= печать AST в emit-buf =================
@@ -530,10 +696,10 @@ defer an-print                           \ рекурсия; тело — an-pri
     dup OP-OR    = if drop s" or"  emit-st exit then
     emit-ch ;
 
-\ одна ветка if (br, i): i = 0 — первая (после «if»), иначе elseif/else
-: an-branch-print ( br i -- )
-    { br i }
-    i 0= if
+\ одна ветка if (br, bi): bi = 0 — первая (после «if»), иначе elseif/else
+: an-branch-print ( br bi -- )
+    { br bi }
+    bi 0= if
         1 an-d +!
         br an-l an@ an-print              \ условие
         -1 an-d +!
@@ -550,7 +716,9 @@ defer an-print                           \ рекурсия; тело — an-pri
         then
     then
     1 an-d +!
-    br an-r an@ an-print                  \ значение ветки
+    br an-aux an@ ulist-len 0 ?do
+        i br an-aux an@ ulist-nth-addr an-print
+    loop
     -1 an-d +! ;
 
 \ весь if: «if», ветки, «end» (отступ строки узла уже напечатал an-print-1)
@@ -607,6 +775,46 @@ defer an-print                           \ рекурсия; тело — an-pri
         ANT-IF of
             m an-if-print
             an-indent s" end" emit-st emit-nl
+        endof
+        ANT-RET of
+            m an-aux an@ ulist-len 1 = if
+                \ одна expr — печатаем её на месте (откат ложного отступа строки ret)
+                an-d @ 2* negate emit-pos +!
+                0 m an-aux an@ ulist-nth-addr an-print
+            else
+                s" ret" emit-st emit-nl
+                1 an-d +!
+                m an-aux an@ ulist-len 0 ?do
+                    i m an-aux an@ ulist-nth-addr an-print
+                loop
+                -1 an-d +!
+            then
+        endof
+        ANT-ASSIGN of
+            s" assign " emit-st m an-text emit-st emit-nl
+            1 an-d +! m an-l an@ an-print -1 an-d +!
+        endof
+        ANT-LOCAL of
+            s" local " emit-st m an-text emit-st emit-nl
+            1 an-d +! m an-l an@ an-print -1 an-d +!
+        endof
+        ANT-WHILE of
+            s" while" emit-st emit-nl
+            1 an-d +!
+            m an-l an@ an-print
+            m an-aux an@ ulist-len 0 ?do
+                i m an-aux an@ ulist-nth-addr an-print
+            loop
+            -1 an-d +!
+        endof
+        ANT-REPEAT of
+            s" repeat" emit-st emit-nl
+            1 an-d +!
+            m an-aux an@ ulist-len 0 ?do
+                i m an-aux an@ ulist-nth-addr an-print
+            loop
+            m an-l an@ an-print
+            -1 an-d +!
         endof
         true abort" flua: internal AST error: bad node type"
     endcase ;

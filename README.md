@@ -22,6 +22,11 @@ Transpiles a simple Lua subset to Gforth-compatible Forth source.
   return …] [else return …] end` — оператор тела; каждая ветка содержит
   `return`; `elseif`/`else` опциональны; условие — целое выражение
 - **Вызовы слов**: `name(a, b)` и ссылки на параметры `name`
+- **Глобалы**: `name = expr` → `VALUE`/`TO` (целое) или `2VALUE`/`TO`
+  (строка / `..`); смена типа при повторном присваивании — ошибка
+- **`print(...)`**: builtin; целые → `0 .r`, строки/`..`/2VALUE → `type`,
+  аргументы через `space`, в конце `cr`; без возвращаемых значений.
+  Допустим на top-level и как statement в теле функции
 - **Комментарии**: `--` до конца строки. Комментарий (или серия подряд
   идущих `--` строк), стоящий непосредственно перед строкой `function`,
   переносится в выходной Forth шапкой `\ …` перед стек-комментарием;
@@ -40,12 +45,14 @@ function add(a, b) return a + b end
 ```forth
 \ ( a b -- r )
 : add { a b }
-a b + 
+  a b + 
 ;
 ```
 
 Операторы расставляются по приоритету (`a + b * c` → `a b c * +`),
 скобки группируются, `0x10` → `$10`, `-x` → `x negate`.
+Тело функции и ветки `if`/`while`/`repeat` эмитятся с отступом
+(2 пробела на уровень).
 
 `if` транспилируется в Forth `if/else/then`, каждая ветка завершается
 `exit`:
@@ -61,11 +68,11 @@ end
 ```forth
 \ ( n -- r )
 : abs { n }
-n 0 < if 
-n negate exit 
-else 
-n exit 
-then 
+  n 0 < if 
+    n negate exit 
+  else 
+    n exit 
+  then 
 ;
 ```
 
@@ -81,22 +88,23 @@ export PATH="$FLUA_HOME/bin:$PATH"   # одна строка PATH на инст�
 ```bash
 flua file.lua     # компиляция файла → Forth на stdout
 flua              # чтение Lua из stdin
-flua --stack f    # режим --stack (короткий флаг: -s) — стековая эмиссия
 flua --ast f      # вывод AST (дерево разбора) вместо кода (флаг: -a)
+flua repl         # REPL: Lua → Forth → evaluate в gforth
 flua help         # справка
 flua version      # версия
 ```
 
-## Режим `--stack`
+Прагмы перед `function`: `-- @stack` (стековая эмиссия без locals),
+`-- @proc` (слово без возвращаемых значений). CLI `--stack` удалён.
 
-По умолчанию параметры становятся gforth-locals (`: add { a b } …`).
-Режим `--stack` генерирует чисто стековый вариант: шапка — только
-стековая нотация `( a b -- r )`, тело — постфиксный код с минимумом
-подъёмных операций (`dup`/`over`/`d pick`, `swap`/`d roll`):
+## Режим `-- @stack` (на функцию)
 
-```bash
-flua --stack file.lua          # или flua -s file.lua
-FLUA_MODE=stack flua file.lua  # режим также задаётся окружением
+По умолчанию параметры/locals — gforth `{ a b | t }`. Прагма `-- @stack`
+перед функцией даёт чисто стековый вариант без `{ }`, с `pick`/`roll`:
+
+```lua
+-- @stack
+function add(a, b) return a + b end
 ```
 
 ```lua
@@ -104,9 +112,10 @@ function add(a, b) return a + b end
 ```
 
 ```forth
+\ @stack
 \ ( a b -- r )
 : add
-+ 
+  + 
 ;
 ```
 

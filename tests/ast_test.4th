@@ -169,13 +169,13 @@ T{ s\" function flogic(a,b,c) return a and b or not c end"
 
 \ ---------- ошибки ----------
 T{ s\" function broken(a return a end" ast-error? -> true }T
-T{ s\" x = 1" ast-error? -> true }T
+T{ s\" x = 1" ast-error? -> false }T
 T{ s\" function f() return 1 + end" ast-error? -> true }T
-\ ветка if без return — синтаксическая ошибка
+\ ветка if: голый id без assign — ошибка
 T{ s\" function bad(x) if x then x end end" ast-error? -> true }T
-\ пустой return в ветке
-T{ s\" function bad(x) if x then return x else return end" ast-error? -> true }T
-\ нет end блока if
+\ пустой return в ветке — синтаксически ок (семантика @proc — в codegen)
+T{ s\" function bad(x) if x then return x else return end end" ast-error? -> false }T
+\ нет end функции
 T{ s\" function bad(x) if x then return x end" ast-error? -> true }T
 
 \ после ошибки парсер и реестр узлов (an-reset) работоспособны

@@ -17,10 +17,9 @@ export FLUA_HOME="$HOME/flua"
 export PATH="$FLUA_HOME/bin:$PATH"
 
 # 1. написать исходник, например calc.lua
-# 2. проверить компиляцию в ОБОИХ режимах (locals и --stack):
+# 2. проверить транспиляцию + компиляцию Forth (режимы — прагмы в .lua):
 flua-verify calc.lua
-#    OK   [locals] calc.lua
-#    OK   [stack] calc.lua
+#    OK   calc.lua
 
 # 3. проверить ВЫПОЛНЕНИЕ — что функции дают ожидаемое:
 flua calc.lua > /tmp/calc.4th
@@ -31,9 +30,9 @@ fmix test
 fmix check --stage pre-commit
 ```
 
-`flua-verify` (в `bin/`) возвращает 0 только если файл транспилируется
-в обоих режимах и сгенерированный Forth компилируется gforth'ом
-(это ловит в т.ч. вызов несуществующего слова — `Undefined word`).
+`flua-verify` возвращает 0 если файл транспилируется и gforth компилирует
+генерат (ловит в т.ч. `Undefined word`). Стековый codegen — прагма
+`-- @stack` перед `function`, не флаг CLI.
 
 ## Подмножество Lua (шпаргалка)
 
@@ -42,67 +41,47 @@ fmix check --stage pre-commit
 Можно:
 
 ```lua
--- комментарий перед функцией переносится в вывод как \ ...
-function add(a, b) return a + b end          -- целые, приоритеты, скобки
-function s() return "hi" .. "!" end           -- строки, конкатенация ..
-function twice(n) return n * 2 end
-function calc(a, b) return twice(a + b) * 0x2 end   -- вызовы, 0x-hex
-function neg(x) return -x end                 -- унарный минус
-function m(a, b) return if a > b then a else b end end   -- сравнения
-function abs(n)                                -- if/elseif/else/end
-  if n < 0 then return -n
-  elseif n > 0 then return n
-  else return 0
-  end
+x = 10                                     -- глобал → VALUE / TO
+s = "hi"                                   -- строковый глобал → 2VALUE / TO
+1 + 2                                      -- top-level expr → на data stack
+function add(a, b) return a + b end
+function f(x)
+  local t = x * 2                          -- { x | t } + to
+  return t, x                              -- multi-return
+end
+-- @stack
+function add_s(a, b) return a + b end      -- стек без locals
+-- @proc
+function clear(x)                          -- 0 out; пустой return → exit
+  if x < 0 then return end
+  x = 0
 end
 ```
 
-- тело функции — операторы `return <выражение>` и/или `if <условие> then
-  return … [elseif <условие> then return …] [else return …] end`;
-- сравнения: `== ~= < > <= >=` (результат — флаг gforth 0/−1, для `if`:
-  0 = ложь, ≠0 = истина);
-- логика: `not` (→ `0=`), `and`/`or` — шорт-кircuit, тот же флаг 0/−1;
-  приоритет: `or` < `and` < сравнения < `..` < `+ -` < `* / %` < унарный;
-- `elseif`/`else` — опциональны; каждая ветка должна содержать `return`;
-  без `else` при ложном условии в стек ничего не кладётся — для Forth
-  это не ошибка (шапка `\ ( … )` в выводе — документация, не контракт),
-  но результат у вызывающего будет неопределённым — берите результат
-  только если все пути ветвления кладут значение;
-- параметры только для чтения, порядок объявления важен для `--stack`;
-- комментарии `-- …`: в вывод попадает только серия **непосредственно
-  перед строкой `function`**; внутри тела — игнорируются.
+- top-level: `function` | `name = expr` | expr | `print(...)`;
+- в функции: `local`/`assign`/`return`/`if`/`while`/`repeat`/`print(...)`
+  (и др. call-stmt; stmt-списки в ветках);
+- `print(a, b)` → `0 .r` / `type` + `space` + `cr` (0 results);
+- `return a, b` — out-arity N на всех путях; `-- @proc` → N=0;
+- сравнения/логика как раньше (флаг 0/−1); `while`→BEGIN WHILE REPEAT,
+  `repeat`/`until`→BEGIN UNTIL;
+- прагмы перед `function`: `-- @stack`, `-- @proc` (можно вместе);
+- комментарии перед `function` → `\ …` в выводе.
 
-Нельзя (парсер знает `function`, `return`, `if/elseif/else/then/end`,
-`and`/`or`/`not`, но не больше):
+Нельзя:
 
-- циклы `while` / `repeat` / `for`;
-- переменные, `local`, присваивания (`x = 1`), `break`, `goto`;
-- пустой `return`; логические значения (`nil`, `true`, `false`);
-- таблицы `{}`, индексацию `t.k` / `t[1]`, методы `obj:m()`;
-- анонимные/вложенные функции, varargs `...`, блоки `--[[ ]]`.
+- `for`, `break`, `goto`, `nil`/`true`/`false` как литералы;
+- вложенные `function`; таблицы, методы, varargs, `--[[ ]]`;
+- `local`/assign внутри `-- @stack` функции.
 
 ## Частые ловушки ИИ
 
-1. **Пишу «настоящий» Lua** — циклы, переменные, `local`, `x = 1`,
-   присваивания: получите `flua: syntax error at L:C (offset N)`.
-   Подмножество маленькое, держите его перед глазами.
-2. **`if` пишется оператором с `return` в ветках**: `return if …` (if-выражение)
-   невалидно; в однострочнике — два `end`: `function f() if c then return x end end`.
-2. **Руками расставляю `roll`/`pick`/`dup`** в теле: не надо — в
-   режиме `--stack` это делает компилятор (`fl-arrange`), а избыточные
-   подъёмы он минимизирует (`a + b` → просто `+`).
-3. **Смешиваю типы в `..`**: `param .. "x"` — в `--stack` ошибка
-   (`stack model desync`): строка занимает 2 ячейки, `s+` ждёт 4,
-   а параметр — целое. Конкатенируйте строки со строками.
-4. **Забываю про `unused`**: в `--stack` каждый параметр должен
-   использоваться в теле, иначе `parameter 'a' is unused (stack mode)`.
-5. **Вызов незнакомого слова**: `flua` пропустит любое имя, но
-   `flua-verify` упадёт на `Undefined word` — генерируемое слово должно
-   быть либо определённым Forth (например, из gforth), либо описано
-   в этом же файле.
-6. **Проверяю только «что компилируется»**: компиляция ≠ результат.
-   Всегда прогоняйте вызов через `gforth -e 'include … N M f . cr bye'`
-   и сверьте число/строку с ожиданием (примеры в `tests/flua_test.4th`).
+1. **Пишу «настоящий» Lua** вне подмножества — `flua: syntax error`.
+2. **CLI `--stack` удалён** — пишите `-- @stack` перед нужной `function`.
+3. **Руками `roll`/`pick`** не надо — в `@stack` это делает `fl-arrange`.
+4. **`..` с целым-параметром** в `@stack` — desync (строка = 2 ячейки).
+5. **Unused param** в `@stack` — ошибка.
+6. **Проверяю только компиляцию** — всегда гоняйте `gforth -e 'include …'`.
 
 ## Как добавить тест под новую фичу
 

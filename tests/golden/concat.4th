@@ -1,4 +1,4 @@
 \ ( -- r )
 : greet 
-s\" hi " s\" there" s+ 
+  s\" hi " s\" there" s+ 
 ;

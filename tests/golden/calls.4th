@@ -1,13 +1,13 @@
 \ вызовы других слов в выражениях
 \ ( n -- r )
 : twice { n }
-n 2 * 
+  n 2 * 
 ;
 \ ( n -- r )
 : four { n }
-n twice n twice + 
+  n twice n twice + 
 ;
 \ ( -- r )
 : zero 
-0 
+  0 
 ;

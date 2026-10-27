@@ -26,16 +26,58 @@ fl-load-fenum
 
 \ ============================== режим генерации ==============================
 \ false (по умолчанию) — locals: : name { a b } ...
-\ true (--stack)      — чистый стековый вид: : name ... ; с pick/roll
+\ true (-- @stack на функции) — чистый стековый вид: pick/roll
+\ Задаётся per-function из прагмы; глобальный CLI --stack удалён.
 variable stack-mode? false stack-mode? !
+variable proc-mode?  false proc-mode? !   \ -- @proc: out-arity 0
+variable fl-out-arity 1 fl-out-arity !    \ контракт выхода текущего слова
+
+\ ---- глобалы VALUE / 2VALUE (таблица имён для файла / REPL) ----
+\ Запись: name-a, name-u, ncells (1 = VALUE, 2 = 2VALUE); имя — копия
+variable fl-globals                       \ ulist адресов записей
+ulist-new fl-globals !
+
+: fl-glob-free-rec ( rec -- )             \ освободить копию имени + запись
+    dup @ free throw
+    free throw ;
+
+: fl-glob-reset ( -- )
+    ['] fl-glob-free-rec fl-globals @ ulist-each
+    fl-globals @ ulist-clear ;
+
+: fl-glob-find-rec ( a u -- rec|0 )
+    { a u }
+    fl-globals @ ulist-len 0 ?do
+        i fl-globals @ ulist-nth-addr { rec }
+        rec @ rec cell+ @ a u compare 0= if rec unloop exit then
+    loop 0 ;
+
+: fl-glob-find ( a u -- f ) fl-glob-find-rec 0<> ;
+
+: fl-glob-cells ( a u -- n )              \ 1|2; неизвестное имя → 1
+    fl-glob-find-rec dup if 2 cells + @ else drop 1 then ;
+
+: fl-glob-add ( a u ncells -- )           \ копия имени + размер (1|2)
+    >r                                   \ R: ncells
+    dup allocate throw                   \ ( a u na )
+    >r tuck r@ swap move                 \ ( u ) R: ncells na
+    r> swap                              \ ( na u ) R: ncells
+    3 cells allocate throw               \ ( na u rec )
+    tuck cell+ !                         \ rec.u
+    tuck !                               \ rec.a
+    r> over 2 cells + !                  \ rec.ncells
+    fl-globals @ ulist-add ;
 
 \ ============================== буфер эмита ==============================
 
 65536 constant emit-capacity
 create emit-buf emit-capacity allot
 variable emit-pos
+variable fl-indent                          \ уровень отступа (тело fn / if / while)
+2 constant fl-indent-width                  \ пробелов на уровень
+variable fl-repl-out-cells                  \ тип top-level expr: 0/1/2 (для REPL)
 
-: emit-reset ( -- ) 0 emit-pos ! ;
+: emit-reset ( -- ) 0 emit-pos ! 0 fl-indent ! 0 fl-repl-out-cells ! ;
 : emit-ch ( c -- )
     emit-pos @ emit-capacity >= abort" flua: emit buffer overflow"
     emit-buf emit-pos @ + c!
@@ -43,6 +85,10 @@ variable emit-pos
 : emit-st ( a u -- ) dup 0= if 2drop exit then bounds ?do i c@ emit-ch loop ;
 : emit-nl ( -- ) 10 emit-ch ;
 : emit-bl  ( -- ) 32 emit-ch ;
+: emit-ind ( -- )                           \ отступ текущей строки
+    fl-indent @ 0 max fl-indent-width * 0 ?do bl emit-ch loop ;
+: fl-indent+ ( -- ) 1 fl-indent +! ;
+: fl-indent- ( -- ) fl-indent @ 1- 0 max fl-indent ! ;
 : emit-result ( -- a u ) emit-buf emit-pos @ ;
 
 \ ============================== классификация символов ==============================
@@ -411,8 +457,15 @@ require ./flua-codegen.4th
 
 : fl-compile ( a u -- )
     src-set emit-reset 0 fl-cdepth !
-    fl-p-program                        \ токены → дерево функций
-    fl-codegen ;                        \ дерево → код в emit-buf
+    fl-glob-reset                       \ новый файл/чанк — свои VALUE
+    fl-p-program
+    fl-codegen ;
+
+\ compile без сброса глобалов (REPL-чанки)
+: fl-compile-repl ( a u -- )
+    src-set emit-reset 0 fl-cdepth !
+    fl-p-program
+    fl-codegen ;
 
 \ ============================== CLI ==============================
 
@@ -423,12 +476,13 @@ require ./flua-codegen.4th
     ." Usage:" cr
     ."   flua [file.lua]    компиляция файла, Forth на stdout" cr
     ."   flua               чтение Lua из stdin" cr
-    ."   flua --stack f     стековая эмиссия: без { }, pick/roll (флаг: -s)" cr
     ."   flua --ast f       вывод AST (дерево разбора) вместо кода (флаг: -a)" cr
+    ."   flua repl          интерактивный цикл (Lua → Forth → gforth)" cr
     ."   flua help          эта справка" cr
     ."   flua version       версия" cr cr
-    ." Подмножество Lua: function name(a, b) return expr end," cr
-    ." целые (0x hex), строки, + - * / %, not and or, .. (s+), вызовы слов." cr ;
+    ." Прагмы перед function: -- @stack (стек без locals), -- @proc (0 out)." cr
+    ." Подмножество Lua: function, local, присваивания, if/while/repeat," cr
+    ." целые, строки, + - * / %, not and or, .. (s+), вызовы слов." cr ;
 
 : flua.version ( -- ) ." flua v" flua-version type cr ;
 
@@ -453,16 +507,74 @@ require ./flua-codegen.4th
 : flua.ast-cli ( -- )
     flua.src fl-ast-run emit-result type ;
 
-: flua.read-mode ( -- )
-    s" FLUA_MODE" getenv dup 0= if 2drop exit then
-    s" stack" compare 0= if true stack-mode? ! then ;
+require ./flua-host.4th
+
+create fl-repl-buf 4096 allot
+variable fl-repl-u
+
+: fl-repl-line ( -- a u f )               \ f=false → EOF
+    ." flua> " 
+    fl-repl-buf 4096 accept
+    dup 0< if drop 0 0 false exit then
+    cr                                  \ accept не всегда эхоит NL
+    fl-repl-u ! fl-repl-buf fl-repl-u @ true ;
+
+: fl-repl-quit? ( a u -- f )
+    2dup s" quit" compare 0= >r
+    2dup s" exit" compare 0= r> or nip nip ;
+
+: fl-repl-blank? ( a u -- f )             \ только пробелы/пусто
+    bounds ?do i c@ bl > if unloop false exit then loop true ;
+
+: fl-repl-clear-stack ( -- )
+    depth 0 ?do drop loop ;
+
+\ печать результата top-level expr: целое / строка, иначе .s
+: fl-repl-show ( -- )
+    fl-repl-out-cells @ 2 = if
+        depth 2 < if exit then type cr exit
+    then
+    fl-repl-out-cells @ 1 = if
+        depth 1 < if exit then 0 .r cr exit
+    then
+    depth 0> if .s cr then
+    fl-repl-clear-stack ;
+
+\ тело REPL; Ctrl+C (throw -28) ловит flua.repl-cli
+: flua.repl-loop ( -- )
+    fl-glob-reset
+    begin
+        fl-repl-line 0= if ." " cr exit then
+        2dup fl-repl-quit? if 2drop ." " cr exit then
+        2dup fl-repl-blank? if 2drop false else
+            ['] fl-compile-repl catch if
+                ." flua: compile error" cr 2drop
+            else
+                fl-repl-clear-stack       \ каждая строка — чистый стек
+                emit-result host-eval
+                fl-repl-show
+            then
+            false
+        then
+    until ;
+
+: fl-repl-interrupt? ( n -- f )        \ Ctrl+C: -28 User interrupt / -56 QUIT
+    dup -28 = swap -56 = or ;
+
+: flua.repl-cli ( -- )
+    cr ." flua repl (gforth host). quit/exit или EOF — выход." cr
+    ['] flua.repl-loop catch
+    dup fl-repl-interrupt? if
+        drop fl-repl-clear-stack cr exit
+    then
+    throw ;
 
 : flua.dispatch ( -- )
-    flua.read-mode
     s" FLUA_CMD" getenv
     2dup s" help" compare 0= if 2drop flua.help bye then
     2dup s" version" compare 0= if 2drop flua.version bye then
     2dup s" ast" compare 0= if 2drop flua.ast-cli bye then
+    2dup s" repl" compare 0= if 2drop flua.repl-cli bye then
     2drop
     flua.compile-cli bye ;
 
