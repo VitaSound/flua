@@ -15,14 +15,15 @@
 \
 \ Подключается из flua.4th (перед CLI): нужны emit-*, src-*, ulist.
 \ Вход — токены flua-tokens.4th; комментарии TK-CM — trivia.
-\ Грамматика подмножества (как у основного конвейера):
-\   program  := ( function )* EOF
-\   function := 'function' ID '(' params ')' body 'end'
-\   body     := ( 'return' expr | if )*
-\   if       := 'if' expr 'then' 'return' expr
-\               ( 'elseif' expr 'then' 'return' expr )*
-\               [ 'else' 'return' expr ] 'end'
-\   expr     := relational; relational < concat < additive < term < unary < primary
+\ Грамматика подмножества (как у основного конвейера / AGENTS.md):
+\   program  := ( function | assign | expr | print )* EOF
+\   function := [pragmas] 'function' ID '(' params ')' stmts 'end'
+\   stmts    := ( local | assign | return | if | while | repeat | call )*
+\   if       := 'if' expr 'then' stmts
+\               ( 'elseif' expr 'then' stmts )* [ 'else' stmts ] 'end'
+\   while    := 'while' expr 'do' stmts 'end'
+\   repeat   := 'repeat' stmts 'until' expr
+\   expr     := or < and < relational < concat < additive < term < unary < primary
 
 require ./flua-tokens.4th
 
@@ -42,6 +43,7 @@ require ./flua-tokens.4th
 11 constant ANT-RET                     \ return [expr (, expr)*]; aux = ulist exprs
 12 constant ANT-WHILE                   \ while: cond an-l, body an-aux
 13 constant ANT-REPEAT                  \ repeat: body an-aux, cond an-l
+14 constant ANT-FOR                     \ for i=lo,hi: pa/pu=i, an-l=lo, an-r=hi, an-aux=body
 
 256 constant OP-CONCAT                   \ «..» — не ASCII-символ
 257 constant OP-LE                       \ «<=»
@@ -123,9 +125,89 @@ require ./flua-tokens.4th
 variable fl-hdr-i0                      \ первый токен серии (включая CM)
 variable fl-hdr-i1                      \ токен-граница: значимый после серии
 
+\ разобрать тело CM «@forth name ( a b -- c d )» → fl-forth-add
+\ клетки = число идентификаторов по обе стороны от «--»
+variable ff-a variable ff-u variable ff-i
+variable ff-na variable ff-nu
+variable ff-in variable ff-out variable ff-side
+variable ff-wa variable ff-wu
+
+: ff-skip-bl ( -- )
+    begin
+        ff-i @ ff-u @ >= if exit then
+        ff-a @ ff-i @ + c@ bl <=
+    while 1 ff-i +! repeat ;
+
+: ff-take-word ( -- a u | 0 0 )
+    ff-skip-bl
+    ff-i @ ff-u @ >= if 0 0 exit then
+    ff-a @ ff-i @ + ff-wa !
+    0 ff-wu !
+    begin
+        ff-i @ ff-u @ >= if ff-wa @ ff-wu @ exit then
+        ff-a @ ff-i @ + c@ dup bl <= if
+            drop ff-wa @ ff-wu @ exit
+        then
+        [char] ( = if ff-wa @ ff-wu @ exit then
+        1 ff-i +! 1 ff-wu +!
+    again ;
+
+: ff-cell-tok? ( a u -- f )               \ не «--», не «)»
+    2dup s" --" compare 0= if 2drop false exit then
+    2dup s" )" compare 0= if 2drop false exit then
+    nip 0<> ;
+
+: ff-trim ( a u -- a u )                  \ локальный trim (fl-trim ниже по файлу)
+    begin dup while over c@ bl <= while 1 /string repeat then
+    begin dup while 2dup + 1- c@ bl <= while 1- repeat then ;
+
+: fl-forth-parse-cm ( a u -- )
+    ff-trim { a u }
+    u 6 < if exit then                    \ «@forth» = 6
+    a 6 s" @forth" compare 0= 0= if exit then
+    a u 6 /string ff-trim                 \ снять префикс
+    dup 0= if 2drop
+        cr ." flua: @forth: missing word name" cr -1 throw
+    then
+    ff-u ! ff-a ! 0 ff-i !
+    ff-take-word dup 0= if 2drop
+        cr ." flua: @forth: missing word name" cr -1 throw
+    then
+    ff-nu ! ff-na !
+    ff-skip-bl
+    ff-i @ ff-u @ >= if
+        cr ." flua: @forth: expected ( ... )" cr -1 throw
+    then
+    ff-a @ ff-i @ + c@ [char] ( <> if
+        cr ." flua: @forth: expected ( ... )" cr -1 throw
+    then
+    1 ff-i +!                            \ съесть '('
+    0 ff-in ! 0 ff-out ! 0 ff-side !     \ 0=in, 1=out
+    begin
+        ff-take-word dup 0= if 2drop
+            cr ." flua: @forth: unclosed )" cr -1 throw
+        then
+        2dup s" --" compare 0= if
+            2drop 1 ff-side ! false
+        else 2dup s" )" compare 0= if
+            2drop true
+        else
+            ff-cell-tok? 0= if
+                cr ." flua: @forth: bad stack comment" cr -1 throw
+            then
+            ff-side @ if 1 ff-out +! else 1 ff-in +! then
+            false
+        then
+        then
+    until
+    ff-na @ ff-nu @ ff-in @ ff-out @ fl-forth-add ;
+
 : fl-p-hdr-cm ( -- )
     tok-i @ fl-hdr-i0 !                 \ до серии CM (или пусто: i0 = i1)
-    begin tok-t TK-CM = while tok-next repeat
+    begin tok-t TK-CM = while
+        tok-text fl-forth-parse-cm
+        tok-next
+    repeat
     tok-i @ fl-hdr-i1 ! ;
 
 \ ================= узлы =================
@@ -215,16 +297,23 @@ ulist-new an-root !
     0 m an-flags an!
     m ;
 
-: an-assign ( pa pu expr -- m )
-    { pa pu expr }
+\ assign/local: pa/pu = первое имя; an-aux = ulist всех имён (an-id); an-l = expr
+: an-assign ( names expr -- m )
+    { names expr }
     ANT-ASSIGN an-node { m }
-    pa m an-pa an! pu m an-pu an!
+    0 names ulist-nth-addr { id0 }
+    id0 an-pa an@ m an-pa an!
+    id0 an-pu an@ m an-pu an!
+    names m an-aux an!
     expr m an-l an! m ;
 
-: an-local ( pa pu expr -- m )
-    { pa pu expr }
+: an-local ( names expr -- m )
+    { names expr }
     ANT-LOCAL an-node { m }
-    pa m an-pa an! pu m an-pu an!
+    0 names ulist-nth-addr { id0 }
+    id0 an-pa an@ m an-pa an!
+    id0 an-pu an@ m an-pu an!
+    names m an-aux an!
     expr m an-l an! m ;
 
 : an-ret ( exprs -- m )                  \ ulist выражений (0 = пустой return)
@@ -241,6 +330,13 @@ ulist-new an-root !
     { body cond }
     ANT-REPEAT an-node { m }
     body m an-aux an! cond m an-l an! m ;
+
+: an-for ( pa pu lo hi body -- m )
+    { pa pu lo hi body }
+    ANT-FOR an-node { m }
+    pa m an-pa an! pu m an-pu an!
+    lo m an-l an! hi m an-r an!
+    body m an-aux an! m ;
 
 \ trim пробелов по краям (a u -- a' u')
 : fl-trim-lead ( a u -- a u )
@@ -454,6 +550,7 @@ defer fl-p-stmt                          \ один stmt
 defer fl-p-if
 defer fl-p-while
 defer fl-p-repeat
+defer fl-p-for
 
 \ return [expr (, expr)*]
 : fl-p-return ( -- m )
@@ -472,33 +569,44 @@ defer fl-p-repeat
     until
     exprs ulist-reverse exprs an-ret ;
 
-\ local name = expr
+\ ID (, ID)* — список имён (для local / multi-assign)
+: fl-p-name-list ( -- names )
+    ulist-new { names }
+    begin
+        tok-skip-cm
+        tok-t TK-ID = 0= if fl-p-error then
+        tok-p tok-l an-id names ulist-add
+        tok-next
+        [char] , tok-op? if tok-next false else true then
+    until
+    names ulist-reverse names ;
+
+\ local name [, name]* = expr
 : fl-p-local ( -- m )
     tok-next                             \ local
-    tok-skip-cm
-    tok-t TK-ID = 0= if fl-p-error then
-    tok-p tok-l 2>r
-    tok-next
+    fl-p-name-list
     [char] = tok-op? 0= if fl-p-error then
     tok-next
     fl-p-expr
-    2r> rot an-local ;
+    an-local ;
 
-\ name = expr (курсор на ID)
+\ name [, name]* = expr (курсор на первом ID)
 : fl-p-assign ( -- m )
-    tok-p tok-l 2>r
-    tok-next
+    fl-p-name-list
     [char] = tok-op? 0= if fl-p-error then
     tok-next
     fl-p-expr
-    2r> rot an-assign ;
+    an-assign ;
 
-\ ID '=' ? lookahead
+\ ID (, ID)* '=' ? lookahead
 : fl-p-id-assign? ( -- f )
     tok-skip-cm
     tok-t TK-ID = 0= if false exit then
     tok-i @ >r
-    tok-next
+    begin
+        tok-next
+        [char] , tok-op? if tok-next false else true then
+    until
     [char] = tok-op?
     r> tok-i ! ;
 
@@ -520,6 +628,7 @@ defer fl-p-repeat
     s" if" tok-kw? if fl-p-if exit then
     s" while" tok-kw? if fl-p-while exit then
     s" repeat" tok-kw? if fl-p-repeat exit then
+    s" for" tok-kw? if fl-p-for exit then
     fl-p-id-assign? if fl-p-assign exit then
     fl-p-id-call? if fl-p-expr exit then
     fl-p-error ;
@@ -600,6 +709,28 @@ defer fl-p-repeat
     fl-p-expr
     an-repeat ;
 ' fl-p-repeat-1 is fl-p-repeat
+
+\ for i = lo, hi do stmts end  → ANT-FOR (numeric only; step=1)
+: fl-p-end-for? ( -- f ) s" end" tok-kw? ;
+: fl-p-for-1 ( -- m )
+    tok-next                             \ for
+    tok-skip-cm
+    tok-t TK-ID = 0= if fl-p-error then
+    tok-p tok-l { pa pu }
+    tok-next
+    [char] = tok-op? 0= if fl-p-error then
+    tok-next
+    fl-p-expr { lo }
+    [char] , tok-op? 0= if fl-p-error then
+    tok-next
+    fl-p-expr { hi }
+    s" do" tok-kw? 0= if fl-p-error then
+    tok-next
+    ['] fl-p-end-for? fl-p-stmts-until { body }
+    s" end" tok-kw? 0= if fl-p-error then
+    tok-next
+    pa pu lo hi body an-for ;
+' fl-p-for-1 is fl-p-for
 
 : fl-p-body ( -- stmts )
     ['] fl-p-end-body? fl-p-stmts-until ;

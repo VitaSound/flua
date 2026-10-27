@@ -372,6 +372,54 @@ create many-src 9000 allot
     loop drop ;
 T{ fill-many many-src 8200 expect-error -> true }T
 
+\ ---------- local / multi-return / while / repeat / @proc ----------
+T{ s\" function f(x)
+  local t = x * 2
+  return t, x
+end" run-generated 3 f -> 6 3 }T
+T{ s\" -- @proc
+function countdown(n)
+  while n > 0 do
+    n = n - 1
+  end
+end" run-generated 3 countdown -> }T
+T{ s\" function until_zero(n)
+  repeat
+    n = n - 1
+  until n == 0
+  return n
+end" run-generated 4 until_zero -> 0 }T
+T{ s\" -- @proc
+function clear(x)
+  if x < 0 then return end
+  x = 0
+end" run-generated -1 clear -> }T
+T{ s\" -- @proc
+function clear(x)
+  if x < 0 then return end
+  x = 0
+end" run-generated 5 clear -> }T
+
+\ ---------- @forth / multi-assign / for / abort ----------
+T{ s\" -- @forth twice ( n -- n2 )
+function f(x)
+  local y = twice(x)
+  return y
+end"
+   s\" twice" has-output? -> true }T
+T{ s\" function sum_to(n)
+  local s = 0
+  for i = 1, n do
+    s = s + i
+  end
+  return s
+end" run-generated 4 sum_to -> 10 }T
+T{ s\" -- @proc
+function boom()
+  abort(\"x\")
+end"
+   s\" abort\" x\"" has-output? -> true }T
+
 \ ---------- CLI: файл не найден ----------
 \ flua.src при заданном FLUA_ARG с несуществующим файлом:
 \ file-status → сообщение + тихий -1 throw (без трассы gforth)

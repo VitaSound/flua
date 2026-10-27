@@ -68,11 +68,24 @@ end
 - прагмы перед `function`: `-- @stack`, `-- @proc` (можно вместе);
 - комментарии перед `function` → `\ …` в выводе.
 
+Дополнительно:
+
+```lua
+-- @forth open-file ( c-addr u fam -- fileid ior )
+local fid, ior = open_file(a, u, fam)   -- клетки, не «string object»
+-- @forth fjson.str-concat ( a1 u1 a2 u2 -- a3 u3 )
+local a, u = fjson_str_concat(a1, u1, a2, u2)  -- '.'/'?' → '_' в Lua-имени
+abort("open")
+for i = 1, n do s = s + i end             -- → ?do / loop, индекс = i
+```
+
+
 Нельзя:
 
-- `for`, `break`, `goto`, `nil`/`true`/`false` как литералы;
+- `break`, `goto`, `nil`/`true`/`false` как литералы;
 - вложенные `function`; таблицы, методы, varargs, `--[[ ]]`;
-- `local`/assign внутри `-- @stack` функции.
+- `local`/assign/`for` внутри `-- @stack` функции;
+- RTTI / скрытая типизация строк (держите `a, u` явно).
 
 ## Частые ловушки ИИ
 

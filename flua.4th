@@ -31,6 +31,58 @@ fl-load-fenum
 variable stack-mode? false stack-mode? !
 variable proc-mode?  false proc-mode? !   \ -- @proc: out-arity 0
 variable fl-out-arity 1 fl-out-arity !    \ контракт выхода текущего слова
+variable fl-expect-outs -1 fl-expect-outs ! \ ожидаемые outs вызова (−1 = не задано)
+
+\ ---- -- @forth imports: клеточная arity внешних слов ----
+\ Запись fi%: [0] lua-a [1] lua-u [2] forth-a [3] forth-u [4] in-n [5] out-n
+\ lua-имя: forth-имя с '-' → '_'; forth-имя — как в прагме.
+6 cells constant fi-size
+variable fl-forth-ul
+ulist-new fl-forth-ul !
+
+: fi-lua ( fi -- a u ) dup @ swap cell+ @ ;
+: fi-forth ( fi -- a u ) 2 cells + dup @ swap cell+ @ ;
+: fi-in@ ( fi -- n ) 4 cells + @ ;
+: fi-out@ ( fi -- n ) 5 cells + @ ;
+
+: fl-forth-free-one ( fi -- )
+    dup @ free throw
+    dup 2 cells + @ free throw
+    free throw ;
+
+: fl-forth-reset ( -- )
+    ['] fl-forth-free-one fl-forth-ul @ ulist-each
+    fl-forth-ul @ ulist-clear ;
+
+: fl-copy-str ( a u -- na nu )
+    dup allocate throw >r
+    tuck r@ swap move r> swap ;
+
+\ forth-имя → lua-ключ: копия; '-', '.', '?' → '_'
+: fl-forth-to-lua ( a u -- na nu )
+    fl-copy-str { na nu }
+    na nu bounds ?do
+        i c@ dup [char] - = over [char] . = or swap [char] ? = or if
+            [char] _ i c!
+        then
+    loop na nu ;
+
+: fl-forth-find ( a u -- fi|0 )           \ поиск по lua-имени
+    { a u }
+    fl-forth-ul @ ulist-len 0 ?do
+        i fl-forth-ul @ ulist-nth-addr { fi }
+        fi fi-lua a u compare 0= if fi unloop exit then
+    loop 0 ;
+
+: fl-forth-add ( fa fu in-n out-n -- )
+    { fa fu in-n out-n }
+    fa fu fl-forth-to-lua { la lu }
+    fa fu fl-copy-str { fna fnu }
+    fi-size allocate throw { fi }
+    la fi ! lu fi cell+ !
+    fna fi 2 cells + ! fnu fi 3 cells + !
+    in-n fi 4 cells + ! out-n fi 5 cells + !
+    fi fl-forth-ul @ ulist-add ;
 
 \ ---- глобалы VALUE / 2VALUE (таблица имён для файла / REPL) ----
 \ Запись: name-a, name-u, ncells (1 = VALUE, 2 = 2VALUE); имя — копия
@@ -458,12 +510,15 @@ require ./flua-codegen.4th
 : fl-compile ( a u -- )
     src-set emit-reset 0 fl-cdepth !
     fl-glob-reset                       \ новый файл/чанк — свои VALUE
+    fl-forth-reset                      \ -- @forth imports на файл
+    -1 fl-expect-outs !
     fl-p-program
     fl-codegen ;
 
-\ compile без сброса глобалов (REPL-чанки)
+\ compile без сброса глобалов (REPL-чанки); @forth накапливается
 : fl-compile-repl ( a u -- )
     src-set emit-reset 0 fl-cdepth !
+    -1 fl-expect-outs !
     fl-p-program
     fl-codegen ;
 
@@ -480,8 +535,8 @@ require ./flua-codegen.4th
     ."   flua repl          интерактивный цикл (Lua → Forth → gforth)" cr
     ."   flua help          эта справка" cr
     ."   flua version       версия" cr cr
-    ." Прагмы перед function: -- @stack (стек без locals), -- @proc (0 out)." cr
-    ." Подмножество Lua: function, local, присваивания, if/while/repeat," cr
+    ." Прагмы: -- @stack, -- @proc (0 out), -- @forth name ( in -- out )." cr
+    ." Подмножество: function, local, multi-assign, if/while/repeat/for," cr
     ." целые, строки, + - * / %, not and or, .. (s+), вызовы слов." cr ;
 
 : flua.version ( -- ) ." flua v" flua-version type cr ;

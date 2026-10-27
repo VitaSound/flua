@@ -5,34 +5,40 @@ Transpiles a simple Lua subset to Gforth-compatible Forth source.
 
 ## Supported Lua subset
 
-- **Function definitions**: `function name(a, b, ...) return expr end`
+См. также шпаргалку в [AGENTS.md](AGENTS.md). Критерий фичи: эмит —
+**типичный Gforth**, не Lua-VM.
+
+- **Function definitions**: `function name(a, b, ...) … end`
+- **Прагмы** перед `function`: `-- @stack` (стек без locals), `-- @proc`
+  (0 возвращаемых значений; пустой `return` → `exit`)
 - **Integer literals**: decimal and `0x` hex
 - **String literals**: `"..."` и `'...'` (эскейпы `\n`, `\t`, `\\`, `\"`, `\'`)
-- **Binary operators**: `+ - * / %` (целочисленные; `%` → `mod` — остаток
-  со знаком делителя, как в Lua)
-- **String concatenation**: `..` (транспилируется в `s+`)
+- **Binary operators**: `+ - * / %` (целочисленные; `%` → `mod`)
+- **String concatenation**: `..` → `s+` (на стеке строка = 2 клетки)
 - **Unary minus**: `-expr` → `negate`
-- **Логические операторы**: `not` → `0=`; `and` / `or` — шорт-кircuit
-  (правый операнд не вычисляется, когда левый решает исход); результат —
-  флаг gforth: 0 = ложь, −1 = истина (в `if` принимается любой ≠0);
-  операнды — целые
-- **Сравнения**: `== ~= < > <= >=` → `= <> < > <= >=` (результат —
-  флаг gforth: 0 = ложь, −1 = истина; для `if` принимается любой ≠0)
-- **Ветвление**: `if <условие> then return … [elseif <условие> then
-  return …] [else return …] end` — оператор тела; каждая ветка содержит
-  `return`; `elseif`/`else` опциональны; условие — целое выражение
-- **Вызовы слов**: `name(a, b)` и ссылки на параметры `name`
-- **Глобалы**: `name = expr` → `VALUE`/`TO` (целое) или `2VALUE`/`TO`
-  (строка / `..`); смена типа при повторном присваивании — ошибка
-- **`print(...)`**: builtin; целые → `0 .r`, строки/`..`/2VALUE → `type`,
-  аргументы через `space`, в конце `cr`; без возвращаемых значений.
-  Допустим на top-level и как statement в теле функции
-- **Комментарии**: `--` до конца строки. Комментарий (или серия подряд
-  идущих `--` строк), стоящий непосредственно перед строкой `function`,
-  переносится в выходной Forth шапкой `\ …` перед стек-комментарием;
-  остальные комментарии (внутри тела, в конце файла) отбрасываются —
-  слепо копировать нельзя: `--` в Forth это не комментарий, а
-  несуществующее слово
+- **Логика**: `not` → `0=`; `and` / `or` — short-circuit; флаг 0/−1
+- **Сравнения**: `== ~= < > <= >=` → `= <> < > <= >=`
+- **Ветвление**: `if` / `elseif` / `else` со **списками statements** в ветках
+  (не только `return`); ранний `return` → `exit`
+- **Циклы**: `while … do … end` → `BEGIN WHILE REPEAT`;
+  `repeat … until …` → `BEGIN … UNTIL`
+- **`local` / assign** (не в `-- @stack`): `{ a | t }` + `to`
+- **Multi-return**: `return a, b` — одинаковая out-arity на всех путях
+- **Вызовы слов**: `name(a, b)` (expr или statement)
+- **Глобалы**: `name = expr` → `VALUE`/`2VALUE` / `TO`
+- **`print(...)`**: builtin → `0 .r` / `type` + `space` + `cr`
+- **Top-level**: `function` | assign | expr | `print`
+- **Комментарии**: `--` до конца строки; блок перед `function` → `\ …`
+
+- **`-- @forth name ( in-cells -- out-cells )`**: импорт внешнего слова с
+  клеточной arity; Lua-имя с `_` ↔ Forth-имя с `-`; multi-assign
+  `local a, b = word(...)` стыкует outs
+- **`for i = lo, hi do … end`**: → `hi 1+ lo ?do … loop` (индекс = Forth `i`)
+- **`abort("msg")`**: builtin → `true abort" msg"`
+
+**Чего нет:** `break`, `goto`, `nil`/`true`/`false` как литералы;
+вложенные `function`; таблицы; varargs; `--[[ ]]`; `local`/assign/`for` в
+`-- @stack`. Не Lua-VM / RTTI — генерат должен читаться как типичный Gforth.
 
 ## Output shape
 

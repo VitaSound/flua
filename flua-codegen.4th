@@ -72,10 +72,20 @@ defer fl-eval                          \ рекурсивное слово; те
     [char] " emit-ch emit-bl
     2 m-push-res ;
 
+\ цикл for: имя переменной → эмит Forth «i»
+variable fl-for-va
+variable fl-for-vu
+0 fl-for-va ! 0 fl-for-vu !
+
 \ идентификатор: параметр — подъём/копия (stack) либо просто имя (locals);
 \ не-параметр в --stack — ошибка (проверка — в fl-stack-leaf)
 : fl-eval-id ( m -- )
     { m }
+    fl-for-vu @ if
+        m an-text fl-for-va @ fl-for-vu @ compare 0= if
+            s" i " emit-st exit
+        then
+    then
     stack-mode? @ if
         m an-text fl-stack-leaf
     else
@@ -201,22 +211,74 @@ defer fl-eval                          \ рекурсивное слово; те
     loop
     s" cr " emit-st ;
 
-\ вызов: аргументы → буфер уровня → выравнивание → имя в постфиксной позиции
-\ builtin print — отдельная эмиссия (см. fl-eval-print)
+\ builtin abort("msg") → true abort" msg"
+: fl-eval-abort ( m -- )
+    { m }
+    m an-aux an@ { args }
+    args ulist-len 1 <> if
+        cr ." flua: abort expects one string argument" cr -1 throw
+    then
+    0 args ulist-nth-addr { arg }
+    arg an-type an@ ANT-STR <> if
+        cr ." flua: abort expects a string literal" cr -1 throw
+    then
+    s" true abort" emit-st [char] " emit-ch emit-bl
+    arg an-text { a u }
+    u 2 >= if a 1+ to a u 2 - to u then
+    a u emit-st
+    [char] " emit-ch emit-bl ;
+
+\ bare lua_name → forth-имя: '_' → '-' (точки/«?» только через -- @forth)
+create fl-emit-name-buf 128 allot
+: fl-lua-to-forth-name ( a u -- a u )
+    dup 128 > if cr ." flua: name too long" cr -1 throw then
+    tuck fl-emit-name-buf swap move
+    fl-emit-name-buf swap
+    2dup bounds ?do
+        i c@ [char] _ = if [char] - i c! then
+    loop ;
+
+\ outs вызова: @forth | fl-expect-outs | 1
+: fl-call-resolve-out ( m -- n )
+    { m }
+    m an-text fl-forth-find ?dup if fi-out@ exit then
+    fl-expect-outs @ dup 0< 0= if exit then
+    drop 1 ;
+
+: fl-call-check-in ( m fi -- )
+    { m fi }
+    m an-aux an@ ulist-len fi fi-in@ <> if
+        cr ." flua: @forth arity mismatch for " m an-text type
+        ." : expected " fi fi-in@ . ." args" cr -1 throw
+    then ;
+
+\ вызов: аргументы → имя; outs из @forth / expect / 1
 : fl-eval-call ( m -- )
     { m }
     m an-text s" print" compare 0= if m fl-eval-print exit then
+    m an-text s" abort" compare 0= if m fl-eval-abort exit then
+    m an-text fl-forth-find { fi }
+    fi if m fi fl-call-check-in then
+    m fl-call-resolve-out { outs }
+    fi if
+        fl-expect-outs @ dup 0< 0= if
+            outs <> if
+                cr ." flua: @forth out-arity mismatch for " m an-text type cr
+                -1 throw
+            then
+        else drop then
+    then
     0 fl-karg !
     fl-cdepth @ 8 * fl-cbase ! 1 fl-cdepth +!
     m an-aux an@ { args }
     args ulist-len 0 ?do
         i args ulist-nth-addr fl-eval
-        stack-mode? @ if              \ тэг аргумента — в буфер уровня
+        stack-mode? @ if
             fl-vs @ fl-vsz @ fl-cbase @ fl-karg @ + fl-as!
         then
         1 fl-karg +!
     loop
-    stack-mode? @ if                  \ тэги → актуальные слоты → выравнивание
+    stack-mode? @ if
         fl-karg @ 0 ?do
             fl-cbase @ i + fl-as@ swap m-find swap i fl-o!
         loop
@@ -224,9 +286,13 @@ defer fl-eval                          \ рекурсивное слово; те
         fl-arrange
     then
     -1 fl-cdepth +!
-    m an-text emit-st emit-bl         \ имя в постфиксной позиции
+    fi if
+        fi fi-forth emit-st emit-bl
+    else
+        m an-text fl-lua-to-forth-name emit-st emit-bl
+    then
     fl-karg @ m-popn
-    1 m-push-res ;
+    outs 0 ?do 1 m-push-res loop ;
 
 : fl-eval-1 ( m -- )
     { m }
@@ -270,16 +336,27 @@ defer fl-eval                          \ рекурсивное слово; те
     early? if s" exit " emit-st then
     emit-nl ;
 
-\ ---- assign / local → expr to name ----
+\ ---- assign / local → expr to name[s] (стек: last name на TOS) ----
 : fl-gen-to ( m -- )                      \ ANT-ASSIGN или ANT-LOCAL
     { m }
     stack-mode? @ if
         cr ." flua: locals/assign not supported in -- @stack function" cr
         -1 throw
     then
+    m an-aux an@ { ns }
+    ns ulist-len { n }
+    fl-expect-outs @ >r
+    n fl-expect-outs !
     emit-ind
     m an-l an@ fl-eval
-    s" to " emit-st m an-text emit-st emit-bl emit-nl ;
+    r> fl-expect-outs !
+    \ to в обратном порядке: TOS → последнее имя
+    n 0 ?do
+        n 1- i - ns ulist-nth-addr an-text
+        s" to " emit-st emit-st emit-bl
+    loop
+    emit-nl
+    stack-mode? @ 0= if n m-popn then ;
 
 \ ---- if (ветки = ulist stmt в an-aux) ----
 defer fl-gen-stmt
@@ -365,16 +442,41 @@ defer fl-gen-stmt
     then
     s" until " emit-st emit-nl ;
 
+\ for i=lo,hi → hi 1+ lo ?do … loop ; имя цикла → слово i
+: fl-gen-for ( m -- )
+    { m }
+    stack-mode? @ if
+        cr ." flua: for not supported in -- @stack" cr -1 throw
+    then
+    fl-for-va @ fl-for-vu @ 2>r
+    m an-text fl-for-vu ! fl-for-va !
+    emit-ind
+    m an-r an@ fl-eval                   \ hi
+    s" 1+ " emit-st
+    m an-l an@ fl-eval                   \ lo
+    s" ?do " emit-st emit-nl
+    fl-indent+
+    m an-aux an@ fl-gen-stmts
+    fl-indent-
+    emit-ind s" loop " emit-st emit-nl
+    2r> fl-for-vu ! fl-for-va ! ;
+
 : fl-gen-stmt-1 ( m -- )
     { m }
     m an-type an@ case
         ANT-IF     of m fl-gen-if endof
         ANT-WHILE  of m fl-gen-while endof
         ANT-REPEAT of m fl-gen-repeat endof
+        ANT-FOR    of m fl-gen-for endof
         ANT-RET    of m true fl-gen-ret endof   \ early exit by default in stmt
         ANT-ASSIGN of m fl-gen-to endof
         ANT-LOCAL  of m fl-gen-to endof
-        ANT-CALL   of emit-ind m fl-eval emit-nl endof
+        ANT-CALL   of
+            fl-expect-outs @ >r
+            0 fl-expect-outs !            \ call-stmt → 0 outs по умолчанию
+            emit-ind m fl-eval emit-nl
+            r> fl-expect-outs !
+        endof
         \ legacy: bare expr as return (не должно встречаться после нового парсера)
         m false fl-gen-ret
     endcase ;
@@ -404,6 +506,10 @@ defer fl-count-tree                     \ рекурсия: узел → счё�
         ANT-UN   of m an-l an@ fl-count-tree endof
         ANT-CALL of m an-aux an@ fl-count-tree-lst endof
         ANT-IF   of m an-aux an@ fl-count-tree-lst endof
+        ANT-FOR  of
+            m an-l an@ fl-count-tree m an-r an@ fl-count-tree
+            m an-aux an@ fl-count-tree-lst
+        endof
         ANT-BR   of
             m an-l an@ ?dup if fl-count-tree then
             m an-aux an@ fl-count-tree-lst
@@ -454,7 +560,12 @@ defer fl-collect-locals-stmt
 : fl-collect-locals-stmt-1 ( m -- )
     { m }
     m an-type an@ ANT-LOCAL = if
-        m an-pa an@ m an-pu an@ an-id fl-locals-ul @ ulist-add exit
+        m an-aux an@ { ns }
+        ns ulist-len 0 ?do
+            i ns ulist-nth-addr { id }
+            id an-pa an@ id an-pu an@ an-id fl-locals-ul @ ulist-add
+        loop
+        exit
     then
     m an-type an@ ANT-IF = if
         m an-aux an@ { brs }
@@ -472,6 +583,10 @@ defer fl-collect-locals-stmt
         st ulist-len 0 ?do i st ulist-nth-addr fl-collect-locals-stmt loop
     then
     m an-type an@ ANT-REPEAT = if
+        m an-aux an@ { st }
+        st ulist-len 0 ?do i st ulist-nth-addr fl-collect-locals-stmt loop
+    then
+    m an-type an@ ANT-FOR = if
         m an-aux an@ { st }
         st ulist-len 0 ?do i st ulist-nth-addr fl-collect-locals-stmt loop
     then ;
@@ -530,6 +645,10 @@ defer fl-scan-arity-stmt
         st ulist-len 0 ?do i st ulist-nth-addr fl-scan-arity-stmt loop
     then
     m an-type an@ ANT-REPEAT = if
+        m an-aux an@ { st }
+        st ulist-len 0 ?do i st ulist-nth-addr fl-scan-arity-stmt loop
+    then
+    m an-type an@ ANT-FOR = if
         m an-aux an@ { st }
         st ulist-len 0 ?do i st ulist-nth-addr fl-scan-arity-stmt loop
     then ;

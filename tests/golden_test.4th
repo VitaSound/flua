@@ -84,6 +84,12 @@ s" toplevel"    golden-one
 s" print"       golden-one
 s" print_stack" golden-one
 s" globals_str" golden-one
+s" local_multi" golden-one
+s" while_proc"  golden-one
+s" repeat_until" golden-one
+s" proc_early"  golden-one
+s" forth_import" golden-one
+s" for_loop"    golden-one
 
 cr
 #ERRORS @ 0= [IF]
