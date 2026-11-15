@@ -186,6 +186,10 @@ flua examples/read_file.lua > /tmp/read_file.4th
 gforth -e 'include /tmp/read_file.4th bye'   # из корня репо (путь к data.txt)
 ```
 
+`flua-verify` пишет генерат во временный каталог — относительные
+`@require`/`@fpath` там не найдут `../fjson`. Для пакетов проверяйте так же,
+как выше: генерат в корень репо + `gforth` из корня.
+
 ### Примеры
 
 | Файл | Что показывает |
@@ -194,6 +198,8 @@ gforth -e 'include /tmp/read_file.4th bye'   # из корня репо (пут�
 | [`examples/slurp_file.lua`](examples/slurp_file.lua) | `slurp-file` |
 | [`examples/data.txt`](examples/data.txt) | фикстура для чтения |
 | [`examples/parse_json.lua`](examples/parse_json.lua) | `@require` fjson + `fjson.node-str@` → `_at` → Lua `{}` |
+| [`examples/path_join.lua`](examples/path_join.lua) | `@fpath`/`@require` fjson + `fjson.str-concat` / `str-free` |
+| [`examples/disasm_gen.lua`](examples/disasm_gen.lua) | чистый Lua: `hexdigit` / `hex2hi` / `hex2lo` (без host) |
 | [`examples/json_bridge.4th`](examples/json_bridge.4th) | deprecated; используйте `@require` в `.lua` |
 
 Замечание: `fjson.parse` даёт **дерево нод**, не hashmap. В map кладёте
@@ -208,6 +214,8 @@ gforth -e 'include /tmp/read_file.4th bye'   # из корня репо (пут�
   `@forth type` / `cr`.
 - Имена функций с `_`: define оставляет `_`, вызов эмитит `-` — лучше
   без underscore в имени `function` или зовите из Forth по фактическому имени.
+- Не оборачивайте одно host-слово в flua-`function` ради алиаса (урок
+  `json_has`: `fjson.contains?` зовите через `@forth`, без `fsoc_json_has`).
 
 ## Режим `-- @stack` (на функцию)
 

@@ -93,6 +93,8 @@ s" for_loop"    golden-one
 s" table_map"   golden-one
 s" table_list"  golden-one
 s" table_index_set" golden-one
+s" disasm_gen"   golden-one
+s" path_join"    golden-one
 
 cr
 #ERRORS @ 0= [IF]

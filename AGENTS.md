@@ -96,9 +96,9 @@ xs[0] = 99                                -- ulist-set-term
   Нетипизированный ID → ошибка на `@forth` (не тихий `0→1`).
 - Имена: `-./?/` → `_`; **`@` → `_at`**.
 - `-- @require path` / `-- @fpath dir` → эмит в начале генерата; пути от
-  каталога генерата (gforth). Примеры: `examples/read_file.lua`,
-  `slurp_file.lua`, `parse_json.lua`. Полный текст —
-  [README § Host Forth](README.md#host-forth).
+  каталога генерата (gforth). Примеры: `examples/parse_json.lua`,
+  `path_join.lua`, `read_file.lua`, `slurp_file.lua`, `disasm_gen.lua`
+  (без host). Полный текст — [README § Host Forth](README.md#host-forth).
 - Outs пользовательских `function` в реестре (не default 1 вслепую).
 
 Нельзя:
@@ -138,10 +138,14 @@ xs[0] = 99                                -- ulist-set-term
 7. **Смешанный `{1, a=2}`** — ошибка; int `t[i]` = ulist, не hashmap.
 8. **`-- @forth` без `@require` пакета** — Undefined word; добавьте
    `-- @require` / `-- @fpath` (пути от каталога генерата).
-9. **Строковый `path` как Lua-param** + `@forth` на 3 клетки — arity miss /
+9. **`flua-verify` + `@require`/`@fpath`** — генерат во `/tmp`,
+   `../fjson` не резолвится. Пишите `.4th` в корень flua и гоняйте
+   `gforth` оттуда (как `examples/parse_json.lua` / `path_join.lua`).
+10. **Строковый `path` как Lua-param** + `@forth` на 3 клетки — arity miss /
    `untyped arg`; литерал/`2VALUE` или явные `a, u`.
-10. **`print(addr, u)`** ≠ текст; для буфера — `@forth type`.
-11. **`@` в Forth-имени** → Lua `_at` (`fjson_node_str_at`), эмит с `@`.
+11. **`print(addr, u)`** ≠ текст; для буфера — `@forth type`.
+12. **`@` в Forth-имени** → Lua `_at` (`fjson_node_str_at`), эмит с `@`.
+13. **Алиас над одним `@forth`-словом** — не плодить (урок `json_has`).
 
 ## Как добавить тест под новую фичу
 
