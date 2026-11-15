@@ -1,6 +1,6 @@
 # flua — Lua-subset to Forth transpiler
 [![License](https://img.shields.io/badge/License-COPL-red.svg)](https://raw.githubusercontent.com/VitaSound/flua/refs/heads/main/LICENSE)
-[![Ver](https://img.shields.io/badge/Ver-0.1.0-green.svg)](https://github.com/VitaSound/flua/releases/tag/0.1.0)
+[![Ver](https://img.shields.io/badge/Ver-0.1.1-green.svg)](https://github.com/VitaSound/flua/releases/tag/0.1.1)
 [![Cov](https://img.shields.io/badge/Cov-93%25-brightgreen.svg)](https://github.com/VitaSound/flua)
 
 Transpiles a simple Lua subset to Gforth-compatible Forth source.
