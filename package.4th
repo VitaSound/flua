@@ -3,7 +3,7 @@
 \ Order: mandatory meta keys first, then tool requirements, then dependencies.
 forth-package
     key-value name flua
-    key-value version 0.1.1
+    key-value version 0.1.2
     key-value description Lua-subset to Forth source transpiler (integers, string literals, word definitions)
     key-value license COPL
     key-value main flua.4th

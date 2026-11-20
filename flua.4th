@@ -10,7 +10,7 @@
 \   логика: not → 0=, and/or — шорт-кircuit (флаг 0/−1, как сравнения)
 \   вызовы слов name(a, b) и ссылки на параметры name
 
-s" 0.1.1" 2constant flua-version
+s" 0.1.2" 2constant flua-version
 
 \ ============================== fenum (контейнеры для структур) ==============================
 \ Параметры функции хранятся как структуры в addrlist fenum:
@@ -773,14 +773,31 @@ variable fl-repl-u
     then
     throw ;
 
+: obey-wordlist? ( any1 sd wid -- any2 true | any1 sd false )
+    >r 2dup r> search-wordlist IF
+        nip nip execute true EXIT
+    THEN false
+;
+
+wordlist constant flua.commands
+get-current flua.commands set-current
+    synonym help    flua.help
+    synonym version flua.version
+    synonym ast     flua.ast-cli
+    synonym repl    flua.repl-cli
+    synonym compile flua.compile-cli
+set-current
+
+: flua.dispatch-command ( sd.command -- )
+    dup 0= IF 2drop flua.compile-cli EXIT THEN
+    flua.commands obey-wordlist? IF EXIT THEN
+    \ Unknown CMD (bin maps most args to compile): same as compile.
+    2drop flua.compile-cli ;
+
 : flua.dispatch ( -- )
     s" FLUA_CMD" getenv
-    2dup s" help" compare 0= if 2drop flua.help bye then
-    2dup s" version" compare 0= if 2drop flua.version bye then
-    2dup s" ast" compare 0= if 2drop flua.ast-cli bye then
-    2dup s" repl" compare 0= if 2drop flua.repl-cli bye then
-    2drop
-    flua.compile-cli bye ;
+    flua.dispatch-command
+    bye ;
 
 \ CLI-диспетчер запускается только при наличии FLUA_CMD (bin/flua);
 \ require из тестов его не触发ает.

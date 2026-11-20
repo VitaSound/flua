@@ -7,6 +7,11 @@ this project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-11-20
+
+### Changed
+- CLI dispatch uses a command wordlist (`help` / `version` / `ast` / `repl` / `compile`) instead of compare IF chain.
+
 ## [0.1.1] — 2026-11-15
 
 ### Added
